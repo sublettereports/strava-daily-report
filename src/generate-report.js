@@ -59,7 +59,7 @@ async function run() {
 
     const a = a_attach.activity;
     const miles = a.distance / 1609.34;
-    const name = `${a.athlete.lastname}, ${a.athlete.firstname}`;
+    const name = `${a.athlete.lastname.trim()}, ${a.athlete.firstname.trim()}`; // FULL last name
     activeIds.add(a.athlete.id);
 
     if (totals[a.type]) {
@@ -70,7 +70,7 @@ async function run() {
   // Add inactive members (No Activity)
   for (const m of members) {
     if (!activeIds.has(m.id)) {
-      totals.None.push({ name: `${m.lastname}, ${m.firstname}`, miles: "0.00" });
+      totals.None.push({ name: `${m.lastname.trim()}, ${m.firstname.trim()}`, miles: "0.00" });
     }
   }
 
