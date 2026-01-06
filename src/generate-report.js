@@ -73,12 +73,24 @@ async function run() {
   const startY = 150;
   const rowHeight = 14;
 
-  // --- Helper: draw columns for multiple pages ---
-  function drawColumns(titles, dataArrays, xPositions, startY) {
+  // Helper to draw columns for multiple pages
+  function drawColumns(titles, dataArrays, xPositions, startY, showHeaderBanner = false) {
     let y = startY;
+    let firstPage = true;
 
     while (true) {
-      // Draw headers
+      if (showHeaderBanner && firstPage) {
+        // Banner + title at top
+        firstPage = false;
+        doc.moveTo(0, 0); // Reset to top
+        const bannerLogo = axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
+        bannerLogo.then(res => doc.image(res.data, 0, 0, { width: 595 }));
+        doc.moveDown(5);
+        doc.fontSize(18).text(`Strava Daily Report — ${dateLabel}`, { align: "center" });
+        doc.moveDown();
+      }
+
+      // Draw column headers
       titles.forEach((title, i) => {
         doc.fontSize(12).text(title, xPositions[i], y);
       });
@@ -98,37 +110,28 @@ async function run() {
 
       if (dataArrays.some(arr => arr.length > 0)) {
         doc.addPage();
+        y = startY;
       } else break;
     }
   }
 
-  // --- First pages: Walk / Run / Ride evenly spaced ---
+  // --- Walk / Run / Ride section ---
   drawColumns(
     ["Walk", "Run", "Ride"],
     [totals.Walk.slice(), totals.Run.slice(), totals.Ride.slice()],
     [40, doc.page.width / 2 - 50, doc.page.width - 180],
-    startY
+    startY,
+    true // show banner/title on first page of this section
   );
 
-  // --- Hike / No Activity on separate page(s) with banner + title ---
+  // --- Hike / No Activity section ---
   if (totals.Hike.length > 0 || totals.None.length > 0) {
-    doc.addPage();
-
-    // Banner logo full width
-    const logo = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
-    doc.image(logo.data, 0, 0, { width: 595 });
-
-    // Title + date on single line
-    doc.moveDown(5);
-    doc.fontSize(18).text(`Strava Daily Report — ${dateLabel}`, { align: "center" });
-    doc.moveDown();
-
-    // Draw Hike / No Activity columns
     drawColumns(
       ["Hike", "No Activity"],
       [totals.Hike.slice(), totals.None.slice()],
       [40, doc.page.width / 2 + 20],
-      startY
+      startY,
+      true // show banner/title on first page of this section
     );
   }
 
