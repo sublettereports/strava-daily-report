@@ -70,4 +70,69 @@ async function run() {
   doc.pipe(fs.createWriteStream(fileName));
 
   const pageHeight = doc.page.height - 80;
-  const startY =
+  const startY = 150;
+  const rowHeight = 14;
+
+  // --- Helper: draw columns for multiple pages ---
+  function drawColumns(titles, dataArrays, xPositions, startY) {
+    let y = startY;
+
+    while (true) {
+      // Draw headers
+      titles.forEach((title, i) => {
+        doc.fontSize(12).text(title, xPositions[i], y);
+      });
+      y += 20;
+
+      let maxRows = 0;
+      titles.forEach((title, i) => {
+        const data = dataArrays[i];
+        const rows = data.splice(0, Math.floor((pageHeight - y) / rowHeight));
+        rows.forEach((line, j) => {
+          doc.fontSize(10).text(line, xPositions[i], y + j * rowHeight);
+        });
+        if (rows.length > maxRows) maxRows = rows.length;
+      });
+
+      y += maxRows * rowHeight + 20;
+
+      if (dataArrays.some(arr => arr.length > 0)) {
+        doc.addPage();
+      } else break;
+    }
+  }
+
+  // --- First pages: Walk / Run / Ride evenly spaced ---
+  drawColumns(
+    ["Walk", "Run", "Ride"],
+    [totals.Walk.slice(), totals.Run.slice(), totals.Ride.slice()],
+    [40, doc.page.width / 2 - 50, doc.page.width - 180],
+    startY
+  );
+
+  // --- Hike / No Activity on separate page(s) with banner + title ---
+  if (totals.Hike.length > 0 || totals.None.length > 0) {
+    doc.addPage();
+
+    // Banner logo full width
+    const logo = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
+    doc.image(logo.data, 0, 0, { width: 595 });
+
+    // Title + date on single line
+    doc.moveDown(5);
+    doc.fontSize(18).text(`Strava Daily Report — ${dateLabel}`, { align: "center" });
+    doc.moveDown();
+
+    // Draw Hike / No Activity columns
+    drawColumns(
+      ["Hike", "No Activity"],
+      [totals.Hike.slice(), totals.None.slice()],
+      [40, doc.page.width / 2 + 20],
+      startY
+    );
+  }
+
+  doc.end();
+}
+
+run();
