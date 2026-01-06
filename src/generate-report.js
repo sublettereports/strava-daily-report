@@ -30,22 +30,31 @@ async function getAccessToken() {
 async function run() {
   const token = await getAccessToken();
 
-  // Pull activities and members
-  const activities = await axios.get(
+  // --- Fetch all activities (Version 1 behavior)
+  const activitiesRes = await axios.get(
     `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
 
-  const members = await axios.get(
-    `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/members`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
+  // --- Fetch all members with pagination (future-proof)
+  let members = [];
+  let page = 1;
+  const perPage = 200; // fetch up to 200 per page
+  while (true) {
+    const res = await axios.get(
+      `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/members?page=${page}&per_page=${perPage}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.data || res.data.length === 0) break;
+    members = members.concat(res.data);
+    page++;
+  }
 
+  // --- Process activities
   const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
   const activeIds = new Set();
 
-  // Process activities safely
-  for (const a_attach of activities.data) {
+  for (const a_attach of activitiesRes.data) {
     if (!a_attach.activity || !a_attach.activity.distance) continue;
 
     const a = a_attach.activity;
@@ -58,14 +67,14 @@ async function run() {
     }
   }
 
-  // Add inactive members to NO ACTIVITY
-  for (const m of members.data) {
+  // --- Add inactive members to No Activity
+  for (const m of members) {
     if (!activeIds.has(m.id)) {
       totals.None.push(`${m.firstname} ${m.lastname} — 0.00 mi`);
     }
   }
 
-  // Generate PDF
+  // --- Generate PDF
   const doc = new PDFDocument({ margin: 40 });
   doc.pipe(fs.createWriteStream(fileName));
 
@@ -73,18 +82,17 @@ async function run() {
   const startY = 150;
   const rowHeight = 14;
 
-  // Load banner image synchronously before drawing pages
+  // Load banner synchronously
   const logoResponse = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
   const logoBuffer = Buffer.from(logoResponse.data, "binary");
 
-  // --- Helper to draw columns for a section ---
+  // --- Helper to draw columns
   function drawColumns(titles, dataArrays, xPositions, showBannerOnFirstPage = false) {
     let y = startY;
     let firstPage = true;
 
     while (true) {
       if (showBannerOnFirstPage && firstPage) {
-        // Draw banner + title
         doc.image(logoBuffer, 0, 0, { width: 595 });
         doc.moveDown(5);
         doc.fontSize(18).text(`Strava Daily Report — ${dateLabel}`, { align: "center" });
@@ -92,7 +100,7 @@ async function run() {
         firstPage = false;
       }
 
-      // Draw headers
+      // Column headers
       titles.forEach((title, i) => {
         doc.fontSize(12).text(title, xPositions[i], y);
       });
@@ -122,17 +130,17 @@ async function run() {
     ["Walk", "Run", "Ride"],
     [totals.Walk.slice(), totals.Run.slice(), totals.Ride.slice()],
     [40, doc.page.width / 2 - 50, doc.page.width - 180],
-    true // banner/title on first page of this section
+    true
   );
 
   // --- Hike / No Activity section ---
   if (totals.Hike.length > 0 || totals.None.length > 0) {
-    doc.addPage(); // ensure section starts on new page
+    doc.addPage(); // start section on new page
     drawColumns(
       ["Hike", "No Activity"],
       [totals.Hike.slice(), totals.None.slice()],
       [40, doc.page.width / 2 + 20],
-      true // banner/title on first page of this section
+      true
     );
   }
 
