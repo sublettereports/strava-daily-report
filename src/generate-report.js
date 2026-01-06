@@ -10,7 +10,7 @@ const {
   STRAVA_LOGO_URL
 } = process.env;
 
-// Date in Month Day, Year format
+// Report date in Month Day, Year
 const reportDate = new Date(Date.now() - 86400000);
 const options = { year: "numeric", month: "long", day: "numeric" };
 const dateLabel = reportDate.toLocaleDateString("en-US", options);
@@ -30,7 +30,7 @@ async function getAccessToken() {
 async function run() {
   const token = await getAccessToken();
 
-  // Get activities and members
+  // Pull activities and members
   const activities = await axios.get(
     `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -51,7 +51,6 @@ async function run() {
     const a = a_attach.activity;
     const miles = a.distance / 1609.34;
     const name = `${a.athlete.firstname} ${a.athlete.lastname}`;
-
     activeIds.add(a.athlete.id);
 
     if (totals[a.type]) {
@@ -59,7 +58,7 @@ async function run() {
     }
   }
 
-  // Inactive members
+  // Add inactive members to NO ACTIVITY
   for (const m of members.data) {
     if (!activeIds.has(m.id)) {
       totals.None.push(`${m.firstname} ${m.lastname} — 0.00 mi`);
@@ -70,27 +69,22 @@ async function run() {
   const doc = new PDFDocument({ margin: 40 });
   doc.pipe(fs.createWriteStream(fileName));
 
-  // Banner logo top
+  // Banner logo full width
   const logo = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
-  doc.image(logo.data, 0, 0, { width: 595 }); // full page width approx
+  doc.image(logo.data, 0, 0, { width: 595 }); // approx full page width
 
-  // Title below banner
-  doc.moveDown(6);
-  doc.fontSize(18).text("Strava Daily Report", { align: "center" });
-  doc.moveDown(0.5);
-  doc.fontSize(14).text(dateLabel, { align: "center" });
+  // Title + date on single line
+  doc.moveDown(5);
+  doc.fontSize(18).text(`Strava Daily Report — ${dateLabel}`, { align: "center" });
   doc.moveDown();
 
-  // Constants
   const pageHeight = doc.page.height - 80;
   const startY = 150;
-  const columnWidth = 180;
   const rowHeight = 14;
 
-  // Helper to draw columns and manage page breaks
-  function drawColumns(titles, dataArrays, startY) {
+  // --- Helper: draw columns for multiple pages ---
+  function drawColumns(titles, dataArrays, xPositions, startY) {
     let y = startY;
-    const xPositions = [40, 40 + columnWidth, 40 + columnWidth * 2];
 
     while (true) {
       // Draw headers
@@ -118,19 +112,21 @@ async function run() {
     }
   }
 
-  // First pages: Walk, Run, Ride
+  // --- First pages: Walk / Run / Ride evenly spaced ---
   drawColumns(
     ["Walk", "Run", "Ride"],
     [totals.Walk.slice(), totals.Run.slice(), totals.Ride.slice()],
+    [40, doc.page.width / 2 - 50, doc.page.width - 180],
     startY
   );
 
-  // Hike + NO ACTIVITY on next page(s)
+  // --- Hike / No Activity on separate page(s) ---
   if (totals.Hike.length > 0 || totals.None.length > 0) {
     doc.addPage();
     drawColumns(
-      ["Hike", "No Activity", ""],
-      [totals.Hike.slice(), totals.None.slice(), []],
+      ["Hike", "No Activity"],
+      [totals.Hike.slice(), totals.None.slice()],
+      [40, doc.page.width / 2 + 20],
       startY
     );
   }
