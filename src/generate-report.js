@@ -63,13 +63,14 @@ async function run() {
   const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
   const activeIds = new Set();
 
-  // Active members
+  // Active members: get full last name from member lookup
   for (const a_attach of activitiesRes.data) {
     if (!a_attach.activity || !a_attach.activity.distance) continue;
 
     const a = a_attach.activity;
     const miles = a.distance / 1609.34;
 
+    // ✅ Full name from members list
     const memberInfo = memberLookup[a.athlete.id];
     if (!memberInfo) continue; // skip if not found
 
