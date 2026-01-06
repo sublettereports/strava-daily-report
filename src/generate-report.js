@@ -73,24 +73,26 @@ async function run() {
   const startY = 150;
   const rowHeight = 14;
 
-  // Helper to draw columns for multiple pages
-  function drawColumns(titles, dataArrays, xPositions, startY, showHeaderBanner = false) {
+  // Load banner image synchronously before drawing pages
+  const logoResponse = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
+  const logoBuffer = Buffer.from(logoResponse.data, "binary");
+
+  // --- Helper to draw columns for a section ---
+  function drawColumns(titles, dataArrays, xPositions, showBannerOnFirstPage = false) {
     let y = startY;
     let firstPage = true;
 
     while (true) {
-      if (showHeaderBanner && firstPage) {
-        // Banner + title at top
-        firstPage = false;
-        doc.moveTo(0, 0); // Reset to top
-        const bannerLogo = axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
-        bannerLogo.then(res => doc.image(res.data, 0, 0, { width: 595 }));
+      if (showBannerOnFirstPage && firstPage) {
+        // Draw banner + title
+        doc.image(logoBuffer, 0, 0, { width: 595 });
         doc.moveDown(5);
         doc.fontSize(18).text(`Strava Daily Report — ${dateLabel}`, { align: "center" });
         doc.moveDown();
+        firstPage = false;
       }
 
-      // Draw column headers
+      // Draw headers
       titles.forEach((title, i) => {
         doc.fontSize(12).text(title, xPositions[i], y);
       });
@@ -120,18 +122,17 @@ async function run() {
     ["Walk", "Run", "Ride"],
     [totals.Walk.slice(), totals.Run.slice(), totals.Ride.slice()],
     [40, doc.page.width / 2 - 50, doc.page.width - 180],
-    startY,
-    true // show banner/title on first page of this section
+    true // banner/title on first page of this section
   );
 
   // --- Hike / No Activity section ---
   if (totals.Hike.length > 0 || totals.None.length > 0) {
+    doc.addPage(); // ensure section starts on new page
     drawColumns(
       ["Hike", "No Activity"],
       [totals.Hike.slice(), totals.None.slice()],
       [40, doc.page.width / 2 + 20],
-      startY,
-      true // show banner/title on first page of this section
+      true // banner/title on first page of this section
     );
   }
 
