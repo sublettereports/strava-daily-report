@@ -10,9 +10,12 @@ const {
   STRAVA_LOGO_URL
 } = process.env;
 
+// Date in Month Day, Year format
 const reportDate = new Date(Date.now() - 86400000);
-const dateLabel = reportDate.toISOString().split("T")[0];
-const fileName = `strava-daily-report-${dateLabel}.pdf`;
+const options = { year: "numeric", month: "long", day: "numeric" };
+const dateLabel = reportDate.toLocaleDateString("en-US", options);
+
+const fileName = `strava-daily-report-${reportDate.toISOString().split("T")[0]}.pdf`;
 
 async function getAccessToken() {
   const res = await axios.post("https://www.strava.com/oauth/token", {
@@ -27,13 +30,12 @@ async function getAccessToken() {
 async function run() {
   const token = await getAccessToken();
 
-  // Pull club activities
+  // Get activities and members
   const activities = await axios.get(
     `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
 
-  // Pull all club members
   const members = await axios.get(
     `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/members`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -57,7 +59,7 @@ async function run() {
     }
   }
 
-  // Add inactive members to NO ACTIVITY
+  // Inactive members
   for (const m of members.data) {
     if (!activeIds.has(m.id)) {
       totals.None.push(`${m.firstname} ${m.lastname} — 0.00 mi`);
@@ -70,31 +72,67 @@ async function run() {
 
   // Banner logo top
   const logo = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
-  doc.image(logo.data, 40, 20, { width: 520 });
+  doc.image(logo.data, 0, 0, { width: 595 }); // full page width approx
 
-  // Report title below banner
-  doc.moveDown(3);
-  doc.fontSize(18).text(`Strava Daily Report — ${dateLabel}`, { align: "center" });
+  // Title below banner
+  doc.moveDown(6);
+  doc.fontSize(18).text("Strava Daily Report", { align: "center" });
+  doc.moveDown(0.5);
+  doc.fontSize(14).text(dateLabel, { align: "center" });
   doc.moveDown();
 
-  // Columns: Walk, Run, Ride, Hike/No Activity
-  const columns = [
-    ["Walk", totals.Walk],
-    ["Run", totals.Run],
-    ["Ride", totals.Ride],
-    ["Hike / No Activity", [...totals.Hike, "", "NO ACTIVITY", ...totals.None]]
-  ];
+  // Constants
+  const pageHeight = doc.page.height - 80;
+  const startY = 150;
+  const columnWidth = 180;
+  const rowHeight = 14;
 
-  let x = 40;
-  for (const [title, list] of columns) {
-    doc.fontSize(12).text(title, x, 150);
-    doc.fontSize(10);
-    let y = 170;
-    for (const line of list) {
-      doc.text(line, x, y);
-      y += 14;
+  // Helper to draw columns and manage page breaks
+  function drawColumns(titles, dataArrays, startY) {
+    let y = startY;
+    const xPositions = [40, 40 + columnWidth, 40 + columnWidth * 2];
+
+    while (true) {
+      // Draw headers
+      titles.forEach((title, i) => {
+        doc.fontSize(12).text(title, xPositions[i], y);
+      });
+      y += 20;
+
+      let maxRows = 0;
+      titles.forEach((title, i) => {
+        const data = dataArrays[i];
+        const rows = data.splice(0, Math.floor((pageHeight - y) / rowHeight));
+        rows.forEach((line, j) => {
+          doc.fontSize(10).text(line, xPositions[i], y + j * rowHeight);
+        });
+        if (rows.length > maxRows) maxRows = rows.length;
+      });
+
+      y += maxRows * rowHeight + 20;
+
+      // If any data left, add new page and repeat headers
+      if (dataArrays.some(arr => arr.length > 0)) {
+        doc.addPage();
+      } else break;
     }
-    x += 135;
+  }
+
+  // First pages: Walk, Run, Ride
+  drawColumns(
+    ["Walk", "Run", "Ride"],
+    [totals.Walk.slice(), totals.Run.slice(), totals.Ride.slice()],
+    startY
+  );
+
+  // Hike + NO ACTIVITY on next page(s)
+  if (totals.Hike.length > 0 || totals.None.length > 0) {
+    doc.addPage();
+    drawColumns(
+      ["Hike", "No Activity", ""],
+      [totals.Hike.slice(), totals.None.slice(), []],
+      startY
+    );
   }
 
   doc.end();
