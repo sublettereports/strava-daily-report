@@ -1,37 +1,32 @@
-name: Strava Daily Report
+name: Strava Daily Report Test
 
 on:
-  schedule:
-    # 8:30 AM Central = 14:30 UTC (standard time)
-    - cron: "30 14 * * *"
+  # Run manually or on schedule
   workflow_dispatch:
+  schedule:
+    # Temporary test schedule (15 min from now)
+    # You’ll need to update this manually for the real 8:30 AM CST
+    - cron: "*/15 * * * *"  # Every 15 minutes for testing
 
 jobs:
-  report:
+  generate-and-send-report:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v3
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
         with:
           node-version: 20
 
       - name: Install dependencies
         run: npm install
 
-      - name: Generate PDF
+      - name: Generate PDF report
         run: node src/generate-report.js
-        env:
-          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
-          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
-          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
-          STRAVA_CLUB_ID: ${{ secrets.STRAVA_CLUB_ID }}
-          STRAVA_LOGO_URL: ${{ secrets.STRAVA_LOGO_URL }}
 
-      - name: Email Report
+      - name: Send report email
         run: node src/email-report.js
         env:
           EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
