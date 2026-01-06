@@ -50,52 +50,55 @@ async function run() {
     page++;
   }
 
-  // --- Create member lookup for full names
-  const memberLookup = {};
+  // --- Initialize totals for each member
+  const memberTotals = {};
   for (const m of members) {
-    memberLookup[m.id] = {
-      first: m.firstname.trim(),
-      last: m.lastname.trim()
+    memberTotals[m.id] = {
+      name: `${m.lastname.trim()}, ${m.firstname.trim()}`,
+      Walk: 0,
+      Run: 0,
+      Ride: 0,
+      Hike: 0
     };
   }
 
-  // --- Build totals
-  const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
-  const activeIds = new Set();
-
-  // Active members: get full last name from member lookup
+  // --- Sum all activities per member per type
   for (const a_attach of activitiesRes.data) {
     if (!a_attach.activity || !a_attach.activity.distance) continue;
 
     const a = a_attach.activity;
     const miles = a.distance / 1609.34;
 
-    // ✅ Full name from members list
-    const memberInfo = memberLookup[a.athlete.id];
-    if (!memberInfo) continue; // skip if not found
+    if (!memberTotals[a.athlete.id]) continue; // skip unknown athletes
 
-    const name = `${memberInfo.last}, ${memberInfo.first}`;
-    activeIds.add(a.athlete.id);
-
-    if (totals[a.type]) {
-      totals[a.type].push({ name, miles: miles.toFixed(2) });
+    if (memberTotals[a.athlete.id][a.type] !== undefined) {
+      memberTotals[a.athlete.id][a.type] += miles;
     }
   }
 
-  // Inactive members
-  for (const m of members) {
-    if (!activeIds.has(m.id)) {
-      totals.None.push({ name: `${m.lastname.trim()}, ${m.firstname.trim()}`, miles: "0.00" });
+  // --- Build columns for PDF
+  const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
+
+  for (const id of Object.keys(memberTotals)) {
+    const m = memberTotals[id];
+
+    // Only include in Walk/Run/Ride/Hike if > 0, otherwise will go to No Activity
+    let hasActivity = false;
+    ["Walk", "Run", "Ride", "Hike"].forEach(type => {
+      if (m[type] > 0) {
+        totals[type].push({ name: m.name, miles: m[type].toFixed(2) });
+        hasActivity = true;
+      }
+    });
+
+    if (!hasActivity) {
+      totals.None.push({ name: m.name, miles: "0.00" });
     }
   }
 
-  // Sort each column alphabetically by last name
+  // --- Sort columns alphabetically by last name
   Object.keys(totals).forEach(type => {
     totals[type].sort((a, b) => a.name.localeCompare(b.name));
-  });
-
-  // Convert to string for PDF
-  Object.keys(totals).forEach(type => {
     totals[type] = totals[type].map(item => `${item.name} — ${item.miles} mi`);
   });
 
