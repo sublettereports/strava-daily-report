@@ -27,23 +27,16 @@ async function getAccessToken() {
   return res.data.access_token;
 }
 
-async function fetchAllActivities(token) {
-  let activities = [];
-  let page = 1;
-  const perPage = 200;
-  while (true) {
-    const res = await axios.get(
-      `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities?page=${page}&per_page=${perPage}`,
-      { headers: { Authorization: `Bearer ${token}` } }
-    );
-    if (!res.data || res.data.length === 0) break;
-    activities = activities.concat(res.data);
-    page++;
-  }
-  return activities;
-}
+async function run() {
+  const token = await getAccessToken();
 
-async function fetchAllMembers(token) {
+  // Fetch activities
+  const activitiesRes = await axios.get(
+    `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities`,
+    { headers: { Authorization: `Bearer ${token}` } }
+  );
+
+  // Fetch all members
   let members = [];
   let page = 1;
   const perPage = 200;
@@ -56,24 +49,18 @@ async function fetchAllMembers(token) {
     members = members.concat(res.data);
     page++;
   }
-  return members;
-}
 
-async function run() {
-  const token = await getAccessToken();
-  const activities = await fetchAllActivities(token);
-  const members = await fetchAllMembers(token);
-
-  // --- Build totals using First LastInitial
+  // Build totals using First LastInitial
   const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
   const activeIds = new Set();
 
-  activities.forEach(a => {
-    if (!a || !a.type || !a.distance || !a.athlete) return;
+  for (const a_attach of activitiesRes.data) {
+    if (!a_attach.activity || !a_attach.activity.distance) continue;
 
+    const a = a_attach.activity;
     const miles = a.distance / 1609.34;
     const first = a.athlete.firstname.trim();
-    const lastInitial = a.athlete.lastname.trim()[0];
+    const lastInitial = a.athlete.lastname.trim()[0]; // first letter only
     const name = `${first} ${lastInitial}`;
 
     activeIds.add(a.athlete.id);
@@ -81,15 +68,15 @@ async function run() {
     if (totals[a.type]) {
       totals[a.type].push({ name, lastInitial, miles: miles.toFixed(2) });
     }
-  });
+  }
 
   // Add inactive members
-  members.forEach(m => {
+  for (const m of members) {
     if (!activeIds.has(m.id)) {
       const name = `${m.firstname.trim()} ${m.lastname.trim()[0]}`;
       totals.None.push({ name, lastInitial: m.lastname.trim()[0], miles: "0.00" });
     }
-  });
+  }
 
   // Sort columns alphabetically by last initial
   Object.keys(totals).forEach(type => {
@@ -97,7 +84,7 @@ async function run() {
     totals[type] = totals[type].map(item => `${item.name} — ${item.miles} mi`);
   });
 
-  // --- Generate PDF ---
+  // Generate PDF
   const doc = new PDFDocument({ margin: 40 });
   doc.pipe(fs.createWriteStream(fileName));
 
@@ -146,7 +133,7 @@ async function run() {
     }
   }
 
-  // --- Walk / Run / Ride
+  // Walk / Run / Ride
   drawColumns(
     ["Walk", "Run", "Ride"],
     [totals.Walk.slice(), totals.Run.slice(), totals.Ride.slice()],
@@ -154,7 +141,7 @@ async function run() {
     true
   );
 
-  // --- Hike / No Activity
+  // Hike / No Activity
   if (totals.Hike.length > 0 || totals.None.length > 0) {
     doc.addPage();
     drawColumns(
