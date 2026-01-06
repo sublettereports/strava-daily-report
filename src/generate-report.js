@@ -27,16 +27,23 @@ async function getAccessToken() {
   return res.data.access_token;
 }
 
-async function run() {
-  const token = await getAccessToken();
+async function fetchAllActivities(token) {
+  let activities = [];
+  let page = 1;
+  const perPage = 200;
+  while (true) {
+    const res = await axios.get(
+      `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities?page=${page}&per_page=${perPage}`,
+      { headers: { Authorization: `Bearer ${token}` } }
+    );
+    if (!res.data || res.data.length === 0) break;
+    activities = activities.concat(res.data);
+    page++;
+  }
+  return activities;
+}
 
-  // --- Fetch activities
-  const activitiesRes = await axios.get(
-    `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities`,
-    { headers: { Authorization: `Bearer ${token}` } }
-  );
-
-  // --- Fetch all members
+async function fetchAllMembers(token) {
   let members = [];
   let page = 1;
   const perPage = 200;
@@ -49,18 +56,24 @@ async function run() {
     members = members.concat(res.data);
     page++;
   }
+  return members;
+}
+
+async function run() {
+  const token = await getAccessToken();
+  const activities = await fetchAllActivities(token);
+  const members = await fetchAllMembers(token);
 
   // --- Build totals using First LastInitial
   const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
   const activeIds = new Set();
 
-  for (const a_attach of activitiesRes.data) {
-    if (!a_attach.activity || !a_attach.activity.distance) continue;
+  activities.forEach(a => {
+    if (!a || !a.type || !a.distance || !a.athlete) return;
 
-    const a = a_attach.activity;
     const miles = a.distance / 1609.34;
     const first = a.athlete.firstname.trim();
-    const lastInitial = a.athlete.lastname.trim()[0]; // first letter only
+    const lastInitial = a.athlete.lastname.trim()[0];
     const name = `${first} ${lastInitial}`;
 
     activeIds.add(a.athlete.id);
@@ -68,17 +81,17 @@ async function run() {
     if (totals[a.type]) {
       totals[a.type].push({ name, lastInitial, miles: miles.toFixed(2) });
     }
-  }
+  });
 
   // Add inactive members
-  for (const m of members) {
+  members.forEach(m => {
     if (!activeIds.has(m.id)) {
       const name = `${m.firstname.trim()} ${m.lastname.trim()[0]}`;
       totals.None.push({ name, lastInitial: m.lastname.trim()[0], miles: "0.00" });
     }
-  }
+  });
 
-  // --- Sort columns alphabetically by last initial
+  // Sort columns alphabetically by last initial
   Object.keys(totals).forEach(type => {
     totals[type].sort((a, b) => a.lastInitial.localeCompare(b.lastInitial));
     totals[type] = totals[type].map(item => `${item.name} — ${item.miles} mi`);
