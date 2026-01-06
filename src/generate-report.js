@@ -36,10 +36,10 @@ async function run() {
     { headers: { Authorization: `Bearer ${token}` } }
   );
 
-  // --- Fetch all members with pagination (future-proof)
+  // --- Fetch all members with pagination
   let members = [];
   let page = 1;
-  const perPage = 200; // fetch all in batches of 200
+  const perPage = 200;
   while (true) {
     const res = await axios.get(
       `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/members?page=${page}&per_page=${perPage}`,
@@ -50,16 +50,30 @@ async function run() {
     page++;
   }
 
-  // --- Build totals with Last, First format ---
+  // --- Create member lookup for full names
+  const memberLookup = {};
+  for (const m of members) {
+    memberLookup[m.id] = {
+      first: m.firstname.trim(),
+      last: m.lastname.trim()
+    };
+  }
+
+  // --- Build totals
   const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
   const activeIds = new Set();
 
+  // Active members
   for (const a_attach of activitiesRes.data) {
     if (!a_attach.activity || !a_attach.activity.distance) continue;
 
     const a = a_attach.activity;
     const miles = a.distance / 1609.34;
-    const name = `${a.athlete.lastname.trim()}, ${a.athlete.firstname.trim()}`; // FULL last name
+
+    const memberInfo = memberLookup[a.athlete.id];
+    if (!memberInfo) continue; // skip if not found
+
+    const name = `${memberInfo.last}, ${memberInfo.first}`;
     activeIds.add(a.athlete.id);
 
     if (totals[a.type]) {
@@ -67,7 +81,7 @@ async function run() {
     }
   }
 
-  // Add inactive members (No Activity)
+  // Inactive members
   for (const m of members) {
     if (!activeIds.has(m.id)) {
       totals.None.push({ name: `${m.lastname.trim()}, ${m.firstname.trim()}`, miles: "0.00" });
@@ -92,7 +106,7 @@ async function run() {
   const startY = 150;
   const rowHeight = 14;
 
-  // Load banner synchronously
+  // Load banner
   const logoResponse = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
   const logoBuffer = Buffer.from(logoResponse.data, "binary");
 
