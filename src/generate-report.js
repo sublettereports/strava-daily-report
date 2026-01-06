@@ -30,7 +30,7 @@ async function getAccessToken() {
 async function run() {
   const token = await getAccessToken();
 
-  // --- Fetch all activities (Version 1 behavior)
+  // --- Fetch all activities
   const activitiesRes = await axios.get(
     `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -39,7 +39,7 @@ async function run() {
   // --- Fetch all members with pagination (future-proof)
   let members = [];
   let page = 1;
-  const perPage = 200; // fetch up to 200 per page
+  const perPage = 200; // fetch all in batches of 200
   while (true) {
     const res = await axios.get(
       `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/members?page=${page}&per_page=${perPage}`,
@@ -50,7 +50,7 @@ async function run() {
     page++;
   }
 
-  // --- Process activities
+  // --- Build totals with Last, First format ---
   const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
   const activeIds = new Set();
 
@@ -59,22 +59,32 @@ async function run() {
 
     const a = a_attach.activity;
     const miles = a.distance / 1609.34;
-    const name = `${a.athlete.firstname} ${a.athlete.lastname}`;
+    const name = `${a.athlete.lastname}, ${a.athlete.firstname}`;
     activeIds.add(a.athlete.id);
 
     if (totals[a.type]) {
-      totals[a.type].push(`${name} — ${miles.toFixed(2)} mi`);
+      totals[a.type].push({ name, miles: miles.toFixed(2) });
     }
   }
 
-  // --- Add inactive members to No Activity
+  // Add inactive members (No Activity)
   for (const m of members) {
     if (!activeIds.has(m.id)) {
-      totals.None.push(`${m.firstname} ${m.lastname} — 0.00 mi`);
+      totals.None.push({ name: `${m.lastname}, ${m.firstname}`, miles: "0.00" });
     }
   }
 
-  // --- Generate PDF
+  // Sort each column alphabetically by last name
+  Object.keys(totals).forEach(type => {
+    totals[type].sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  // Convert to string for PDF
+  Object.keys(totals).forEach(type => {
+    totals[type] = totals[type].map(item => `${item.name} — ${item.miles} mi`);
+  });
+
+  // --- Generate PDF ---
   const doc = new PDFDocument({ margin: 40 });
   doc.pipe(fs.createWriteStream(fileName));
 
@@ -86,7 +96,7 @@ async function run() {
   const logoResponse = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
   const logoBuffer = Buffer.from(logoResponse.data, "binary");
 
-  // --- Helper to draw columns
+  // --- Helper to draw columns ---
   function drawColumns(titles, dataArrays, xPositions, showBannerOnFirstPage = false) {
     let y = startY;
     let firstPage = true;
@@ -135,7 +145,7 @@ async function run() {
 
   // --- Hike / No Activity section ---
   if (totals.Hike.length > 0 || totals.None.length > 0) {
-    doc.addPage(); // start section on new page
+    doc.addPage();
     drawColumns(
       ["Hike", "No Activity"],
       [totals.Hike.slice(), totals.None.slice()],
