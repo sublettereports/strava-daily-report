@@ -27,11 +27,13 @@ async function getAccessToken() {
 async function run() {
   const token = await getAccessToken();
 
+  // Pull club activities
   const activities = await axios.get(
     `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities`,
     { headers: { Authorization: `Bearer ${token}` } }
   );
 
+  // Pull all club members
   const members = await axios.get(
     `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/members`,
     { headers: { Authorization: `Bearer ${token}` } }
@@ -40,10 +42,14 @@ async function run() {
   const totals = { Walk: [], Run: [], Ride: [], Hike: [], None: [] };
   const activeIds = new Set();
 
+  // Process activities safely
   for (const a_attach of activities.data) {
+    if (!a_attach.activity || !a_attach.activity.distance) continue;
+
     const a = a_attach.activity;
     const miles = a.distance / 1609.34;
-    const name = a.athlete.firstname + " " + a.athlete.lastname;
+    const name = `${a.athlete.firstname} ${a.athlete.lastname}`;
+
     activeIds.add(a.athlete.id);
 
     if (totals[a.type]) {
@@ -51,22 +57,27 @@ async function run() {
     }
   }
 
+  // Add inactive members to NO ACTIVITY
   for (const m of members.data) {
     if (!activeIds.has(m.id)) {
       totals.None.push(`${m.firstname} ${m.lastname} — 0.00 mi`);
     }
   }
 
+  // Generate PDF
   const doc = new PDFDocument({ margin: 40 });
   doc.pipe(fs.createWriteStream(fileName));
 
+  // Banner logo top
   const logo = await axios.get(STRAVA_LOGO_URL, { responseType: "arraybuffer" });
   doc.image(logo.data, 40, 20, { width: 520 });
 
+  // Report title below banner
   doc.moveDown(3);
   doc.fontSize(18).text(`Strava Daily Report — ${dateLabel}`, { align: "center" });
   doc.moveDown();
 
+  // Columns: Walk, Run, Ride, Hike/No Activity
   const columns = [
     ["Walk", totals.Walk],
     ["Run", totals.Run],
