@@ -1,12 +1,10 @@
-name: Strava Daily Report Test
+name: Strava Daily Report
 
 on:
-  # Run manually or on schedule
-  workflow_dispatch:
   schedule:
-    # Temporary test schedule (15 min from now)
-    # You’ll need to update this manually for the real 8:30 AM CST
-    - cron: "*/15 * * * *"  # Every 15 minutes for testing
+    # 8:30 AM Kansas Central Time (CST/UTC−6)
+    - cron: "30 14 * * *"
+  workflow_dispatch: # allows manual run
 
 jobs:
   generate-and-send-report:
