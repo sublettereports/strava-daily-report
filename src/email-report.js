@@ -9,27 +9,27 @@ const {
   EMAIL_BCC
 } = process.env;
 
-const files = fs.readdirSync(".");
-const pdf = files.find(f => f.startsWith("strava-daily-report"));
-
-if (!pdf) throw new Error("PDF not found");
-
+// Report date
 const reportDate = new Date(Date.now() - 86400000);
 const options = { year: "numeric", month: "long", day: "numeric" };
 const dateLabel = reportDate.toLocaleDateString("en-US", options);
 
-const transporter = nodemailer.createTransport({
-  host: EMAIL_HOST,
-  port: Number(EMAIL_PORT),
-  secure: false,
-  auth: { user: EMAIL_USER, pass: EMAIL_PASS }
-});
+const fileName = `strava-daily-report-${reportDate.toISOString().split("T")[0]}.pdf`;
 
-await transporter.sendMail({
-  from: EMAIL_USER,
-  to: EMAIL_USER,
-  bcc: EMAIL_BCC.split(","),
-  subject: `Strava Daily Report — ${dateLabel}`,
-  text: `This is all of the club activities for ${dateLabel}.`,
-  attachments: [{ filename: pdf, path: pdf }]
-});
+async function sendEmail() {
+  const transporter = nodemailer.createTransport({
+    host: EMAIL_HOST,
+    port: EMAIL_PORT,
+    auth: { user: EMAIL_USER, pass: EMAIL_PASS }
+  });
+
+  await transporter.sendMail({
+    from: EMAIL_USER,
+    bcc: EMAIL_BCC,
+    subject: `Strava Daily Report — ${dateLabel}`,
+    text: `This is all the club activities for ${dateLabel}.`,
+    attachments: [{ filename: fileName, path: fileName }]
+  });
+}
+
+sendEmail();
