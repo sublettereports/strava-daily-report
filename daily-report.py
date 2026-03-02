@@ -34,25 +34,17 @@ def safe_logo_reader(url: str):
 
 
 def pdf_sanity_check(path: str):
+    # Valid PDFs can be small if there are few lines/no logo.
     if not os.path.exists(path):
         raise RuntimeError(f"PDF not created: {path}")
+
     size = os.path.getsize(path)
-    if size < 5_000:
+    if size < 1200:
         raise RuntimeError(f"PDF too small/corrupt (size={size} bytes): {path}")
+
     with open(path, "rb") as f:
         if f.read(5) != b"%PDF-":
             raise RuntimeError(f"PDF header invalid (not %PDF-): {path}")
-
-
-def draw_column_lines(c, x, y_start, lines, line_h, y_min):
-    y = y_start
-    for line in lines:
-        if y < y_min:
-            return y, False
-        if line:
-            c.drawString(x, y, line)
-        y -= line_h
-    return y, True
 
 
 def main():
@@ -64,13 +56,12 @@ def main():
     report_date = data.get("reportDate", "YYYY-MM-DD")
     rows = data.get("rows", [])
     inactive = data.get("inactive", [])
+    totals = data.get("totals", {})
 
-    # Output file (date-stamped)
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     pdf_name = f"strava-daily-report-{report_date}.pdf"
     pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
 
-    # Optional banner logo
     logo_url = os.environ.get("STRAVA_LOGO_URL", "")
     logo = safe_logo_reader(logo_url)
 
@@ -79,7 +70,7 @@ def main():
     margin = 0.5 * inch
     y = height - margin
 
-    # Banner (full width)
+    # Full-width banner
     banner_h = 0.8 * inch
     if logo:
         try:
@@ -103,9 +94,17 @@ def main():
 
     c.setFont("Helvetica", 11)
     c.drawString(margin, y, f"Report date: {report_date} (America/Chicago)")
-    y -= 0.35 * inch
+    y -= 0.28 * inch
 
-    # Column headers
+    c.setFont("Helvetica", 9)
+    c.drawString(
+        margin,
+        y,
+        f"Members: {totals.get('members','?')}  |  Active: {totals.get('activeMembers','?')}  |  No Activity: {totals.get('inactiveMembers','?')}  |  Activities included: {totals.get('activitiesInWindow','?')}",
+    )
+    y -= 0.30 * inch
+
+    # Headers
     c.setFont("Helvetica-Bold", 11)
     col_w = (width - 2 * margin) / 4.0
     headers = ["WALK", "RUN", "RIDE", "HIKE / NO ACTIVITY"]
@@ -115,7 +114,7 @@ def main():
     c.line(margin, y, width - margin, y)
     y -= 0.25 * inch
 
-    # Build column lists
+    # Build column lines
     walk_lines, run_lines, ride_lines, hike_lines = [], [], [], []
 
     for r in rows:
@@ -125,12 +124,16 @@ def main():
         rd = float(r.get("Ride", 0.0) or 0.0)
         hk = float(r.get("Hike", 0.0) or 0.0)
 
-        if w > 0:  walk_lines.append(f"{name}  {fmt_miles(w)} mi")
-        if rn > 0: run_lines.append(f"{name}  {fmt_miles(rn)} mi")
-        if rd > 0: ride_lines.append(f"{name}  {fmt_miles(rd)} mi")
-        if hk > 0: hike_lines.append(f"{name}  {fmt_miles(hk)} mi")
+        if w > 0:
+            walk_lines.append(f"{name}  {fmt_miles(w)} mi")
+        if rn > 0:
+            run_lines.append(f"{name}  {fmt_miles(rn)} mi")
+        if rd > 0:
+            ride_lines.append(f"{name}  {fmt_miles(rd)} mi")
+        if hk > 0:
+            hike_lines.append(f"{name}  {fmt_miles(hk)} mi")
 
-    # NO ACTIVITY list goes under the 4th column
+    # NO ACTIVITY block in 4th column
     hike_lines.append("")
     hike_lines.append("NO ACTIVITY")
     hike_lines.append("—" * 18)
@@ -143,7 +146,6 @@ def main():
     c.setFont("Helvetica", 9)
     line_h = 0.18 * inch
     y_min = margin + 0.75 * inch
-    y_start = y
 
     def new_page():
         nonlocal y
@@ -152,23 +154,26 @@ def main():
         c.setFont("Helvetica-Bold", 14)
         c.drawString(margin, y, f"Strava Daily Report (continued) — {report_date}")
         y -= 0.35 * inch
+
         c.setFont("Helvetica-Bold", 11)
         for i, h in enumerate(headers):
             c.drawString(margin + i * col_w, y, h)
         y -= 0.15 * inch
         c.line(margin, y, width - margin, y)
         y -= 0.25 * inch
+
         c.setFont("Helvetica", 9)
 
-    # Draw row by row across columns (keeps alignment)
-    y = y_start
+    # Draw aligned rows across columns
     for i in range(max_lines):
         if y < y_min:
             new_page()
+
         for col_i in range(4):
             text = columns[col_i][i] if i < len(columns[col_i]) else ""
             if text:
                 c.drawString(margin + col_i * col_w, y, text)
+
         y -= line_h
 
     c.save()
