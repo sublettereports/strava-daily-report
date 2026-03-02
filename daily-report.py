@@ -4,13 +4,14 @@ import io
 import requests
 from datetime import datetime
 
-from reportlab.lib.pagesizes import letter
+from reportlab.lib.pagesizes import letter, landscape
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
 from reportlab.pdfgen import canvas
 
 OUTPUT_DIR = "output"
 DATA_FILE = "report-data.json"
+TZ_LABEL = "Central Time"
 
 
 def require_file(path: str):
@@ -70,7 +71,6 @@ def main():
 
     report_date_raw = data.get("reportDate", "YYYY-MM-DD")
     report_date_pretty = format_report_date(report_date_raw)
-
     rows = data.get("rows", [])
     inactive = data.get("inactive", [])
     totals = data.get("totals", {})
@@ -82,87 +82,111 @@ def main():
     logo_url = os.environ.get("STRAVA_LOGO_URL", "").strip()
     logo = safe_logo_reader(logo_url)
 
-    c = canvas.Canvas(pdf_path, pagesize=letter)
-    width, height = letter
+    # Landscape page
+    pagesize = landscape(letter)
+    c = canvas.Canvas(pdf_path, pagesize=pagesize)
+    width, height = pagesize
+
     margin = 0.5 * inch
 
-    # -------------------------
-    # Compact header (text left, logo right)
-    # -------------------------
-    header_h = 1.15 * inch  # compact header height
-    top_y = height - margin
-    header_bottom_y = top_y - header_h
-
-    # Split header into left text block and right logo block
-    gap = 0.15 * inch
-    right_w = 2.4 * inch  # logo block width
-    left_x = margin
-    right_x = width - margin - right_w
-    left_w = (right_x - gap) - left_x
-
-    # Logo on the right
-    if logo:
-        try:
-            # Fit logo into right block with small padding
-            pad = 0.05 * inch
-            img_x = right_x + pad
-            img_y = header_bottom_y + pad
-            img_w = right_w - 2 * pad
-            img_h = header_h - 2 * pad
-
-            c.drawImage(
-                logo,
-                img_x,
-                img_y,
-                width=img_w,
-                height=img_h,
-                preserveAspectRatio=True,
-                anchor="c",
-                mask="auto",
-            )
-        except Exception:
-            pass
-
-    # Text on the left
-    y = top_y
-    c.setFont("Helvetica-Bold", 16)
-    c.drawString(left_x, y - 0.02 * inch, "Strava Daily Report")
-    y -= 0.30 * inch
-
-    c.setFont("Helvetica", 11)
-    c.drawString(left_x, y, f"Report date: {report_date_pretty} (Central Time)")
-    y -= 0.22 * inch
-
-    c.setFont("Helvetica", 9)
-    summary = (
-        f"Members: {totals.get('members','?')}  |  "
-        f"Active: {totals.get('activeMembers','?')}  |  "
-        f"No Activity: {totals.get('inactiveMembers','?')}  |  "
-        f"Activities included: {totals.get('activitiesInWindow','?')}"
-    )
-    # Keep summary from running into logo block
-    c.drawString(left_x, y, summary[:120])
-    y -= 0.15 * inch
-
-    # Divider line under header
-    c.line(margin, header_bottom_y, width - margin, header_bottom_y)
-
-    # Start table below header
-    y = header_bottom_y - 0.25 * inch
-
-    # -------------------------
-    # 5-column table: Walk | Run | Ride | Hike | No Activity
-    # -------------------------
-    c.setFont("Helvetica-Bold", 10)
-    col_w = (width - 2 * margin) / 5.0
+    # Table config (5 columns)
     headers = ["WALK", "RUN", "RIDE", "HIKE", "NO ACTIVITY"]
-    for i, h in enumerate(headers):
-        c.drawString(margin + i * col_w, y, h)
-    y -= 0.15 * inch
-    c.line(margin, y, width - margin, y)
-    y -= 0.25 * inch
+    col_count = 5
+    col_w = (width - 2 * margin) / col_count
 
-    # Build column lines
+    # Typography
+    body_font = 9.0
+    header_font = 10.5
+    line_h = 0.20 * inch  # slightly taller lines in landscape
+
+    def draw_header():
+        """
+        Draw compact header with text on left and logo on right (vertically centered).
+        Returns y position where the table should start.
+        """
+        top_y = height - margin
+        header_h = 1.20 * inch
+        header_bottom_y = top_y - header_h
+
+        gap = 0.25 * inch
+        right_w = 5.25 * inch  # generous logo area in landscape
+        right_x = width - margin - right_w
+        left_x = margin
+        left_w = (right_x - gap) - left_x
+
+        # Right logo box (centered vertically)
+        if logo:
+            try:
+                pad = 0.06 * inch
+                box_x = right_x + pad
+                box_w = right_w - 2 * pad
+                box_h = header_h - 2 * pad
+                box_y = header_bottom_y + pad
+
+                # The image is placed inside a box and centered by anchor='c'
+                c.drawImage(
+                    logo,
+                    box_x,
+                    box_y,
+                    width=box_w,
+                    height=box_h,
+                    preserveAspectRatio=True,
+                    anchor="c",
+                    mask="auto",
+                )
+            except Exception:
+                pass
+
+        # Left text block
+        y = top_y
+        c.setFont("Helvetica-Bold", 18)
+        c.drawString(left_x, y - 0.06 * inch, "Strava Daily Report")
+        y -= 0.40 * inch
+
+        c.setFont("Helvetica", 12)
+        c.drawString(left_x, y, f"Report date: {report_date_pretty} ({TZ_LABEL})")
+        y -= 0.27 * inch
+
+        c.setFont("Helvetica", 10)
+        summary = (
+            f"Members: {totals.get('members','?')}  |  "
+            f"Active: {totals.get('activeMembers','?')}  |  "
+            f"No Activity: {totals.get('inactiveMembers','?')}  |  "
+            f"Activities included: {totals.get('activitiesInWindow','?')}"
+        )
+
+        # Clip summary so it doesn't run into the logo area
+        max_chars = max(30, int(left_w / 5.6))  # rough but stable
+        c.drawString(left_x, y, summary[:max_chars])
+
+        # Divider under header
+        c.line(margin, header_bottom_y, width - margin, header_bottom_y)
+
+        # Table start
+        return header_bottom_y - 0.30 * inch
+
+    def draw_table_header(y):
+        c.setFont("Helvetica-Bold", header_font)
+        for i, h in enumerate(headers):
+            c.drawString(margin + i * col_w, y, h)
+        y -= 0.14 * inch
+        c.line(margin, y, width - margin, y)
+        y -= 0.22 * inch
+        c.setFont("Helvetica", body_font)
+        return y, y  # (new y, table_content_top_y)
+
+    def draw_column_dividers(y_top, y_bottom):
+        # Subtle vertical lines between columns
+        c.saveState()
+        try:
+            c.setStrokeGray(0.82)  # light gray "subtle" lines
+            for k in range(1, col_count):
+                x = margin + k * col_w
+                c.line(x, y_top, x, y_bottom)
+        finally:
+            c.restoreState()
+
+    # Build column lines (include "mi" in activity columns)
     walk_lines, run_lines, ride_lines, hike_lines, noact_lines = [], [], [], [], []
 
     for r in rows:
@@ -185,47 +209,39 @@ def main():
         noact_lines.append(f"{m.get('name','—')}  0.00 mi")
 
     columns = [walk_lines, run_lines, ride_lines, hike_lines, noact_lines]
-    max_lines = max(len(col) for col in columns) if columns else 0
+    max_lines = max((len(col) for col in columns), default=0)
 
-    c.setFont("Helvetica", 8.6)
-    line_h = 0.18 * inch
-    y_min = margin + 0.75 * inch
+    # First page
+    y = draw_header()
+    y, table_content_top = draw_table_header(y)
 
-    def new_page():
-        nonlocal y
-        c.showPage()
+    # Keep a per-page record so we can draw dividers to the right bounds
+    page_table_top = table_content_top + 0.22 * inch  # top where headers end (approx)
+    page_table_bottom = margin + 0.60 * inch
+    y_min = page_table_bottom
 
-        # Re-draw a simpler compact header on subsequent pages (no logo to save space)
-        top_y2 = height - margin
-        header_h2 = 0.70 * inch
-        header_bottom_y2 = top_y2 - header_h2
-
-        c.setFont("Helvetica-Bold", 13)
-        c.drawString(margin, top_y2 - 0.05 * inch, f"Strava Daily Report — {report_date_pretty}")
-        c.setFont("Helvetica", 9)
-        c.drawString(margin, top_y2 - 0.32 * inch, "Central Time")
-        c.line(margin, header_bottom_y2, width - margin, header_bottom_y2)
-
-        y = header_bottom_y2 - 0.25 * inch
-
-        c.setFont("Helvetica-Bold", 10)
-        for i, h in enumerate(headers):
-            c.drawString(margin + i * col_w, y, h)
-        y -= 0.15 * inch
-        c.line(margin, y, width - margin, y)
-        y -= 0.25 * inch
-        c.setFont("Helvetica", 8.6)
-
+    # Draw rows, page as needed
     for i in range(max_lines):
         if y < y_min:
-            new_page()
+            # Before new page, draw dividers for current page
+            draw_column_dividers(page_table_top, page_table_bottom)
 
-        for col_i in range(5):
+            c.showPage()
+            y = draw_header()
+            y, table_content_top = draw_table_header(y)
+            page_table_top = table_content_top + 0.22 * inch
+            page_table_bottom = margin + 0.60 * inch
+            y_min = page_table_bottom
+
+        for col_i in range(col_count):
             text = columns[col_i][i] if i < len(columns[col_i]) else ""
             if text:
                 c.drawString(margin + col_i * col_w, y, text)
 
         y -= line_h
+
+    # Draw dividers for the last page
+    draw_column_dividers(page_table_top, page_table_bottom)
 
     c.save()
     pdf_sanity_check(pdf_path)
