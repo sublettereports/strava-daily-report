@@ -1,6 +1,9 @@
 import os
 import json
+import io
 import requests
+from datetime import datetime
+
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.units import inch
 from reportlab.lib.utils import ImageReader
@@ -22,19 +25,48 @@ def fmt_miles(x) -> str:
         return "0.00"
 
 
+def format_report_date(yyyy_mm_dd: str) -> str:
+    """
+    Input:  YYYY-MM-DD
+    Output: Month D, YYYY  (e.g., March 1, 2026)
+    """
+    try:
+        dt = datetime.strptime(yyyy_mm_dd, "%Y-%m-%d")
+        # Portable "day without leading zero"
+        day = str(int(dt.strftime("%d")))
+        return f"{dt.strftime('%B')} {day}, {dt.strftime('%Y')}"
+    except Exception:
+        return yyyy_mm_dd
+
+
 def safe_logo_reader(url: str):
+    """
+    Returns an ImageReader or None.
+    Uses BytesIO to reliably pass image bytes to ReportLab.
+    """
     if not url:
         return None
     try:
-        r = requests.get(url, timeout=20)
+        r = requests.get(
+            url,
+            timeout=25,
+            allow_redirects=True,
+            headers={"User-Agent": "strava-daily-report/1.0"},
+        )
         r.raise_for_status()
-        return ImageReader(r.content)
+
+        # Some hosts return HTML instead of an image; quick sanity check.
+        ctype = (r.headers.get("Content-Type") or "").lower()
+        if "image" not in ctype:
+            # Still try (some hosts don't set content-type correctly), but this helps.
+            pass
+
+        return ImageReader(io.BytesIO(r.content))
     except Exception:
         return None
 
 
 def pdf_sanity_check(path: str):
-    # Valid PDFs can be small if there are few lines/no logo.
     if not os.path.exists(path):
         raise RuntimeError(f"PDF not created: {path}")
 
@@ -53,16 +85,18 @@ def main():
     with open(DATA_FILE, "r", encoding="utf-8") as f:
         data = json.load(f)
 
-    report_date = data.get("reportDate", "YYYY-MM-DD")
+    report_date_raw = data.get("reportDate", "YYYY-MM-DD")
+    report_date_pretty = format_report_date(report_date_raw)
+
     rows = data.get("rows", [])
     inactive = data.get("inactive", [])
     totals = data.get("totals", {})
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    pdf_name = f"strava-daily-report-{report_date}.pdf"
+    pdf_name = f"strava-daily-report-{report_date_raw}.pdf"
     pdf_path = os.path.join(OUTPUT_DIR, pdf_name)
 
-    logo_url = os.environ.get("STRAVA_LOGO_URL", "")
+    logo_url = os.environ.get("STRAVA_LOGO_URL", "").strip()
     logo = safe_logo_reader(logo_url)
 
     c = canvas.Canvas(pdf_path, pagesize=letter)
@@ -70,7 +104,7 @@ def main():
     margin = 0.5 * inch
     y = height - margin
 
-    # Full-width banner
+    # Full-width banner logo (optional)
     banner_h = 0.8 * inch
     if logo:
         try:
@@ -82,18 +116,20 @@ def main():
                 height=banner_h,
                 preserveAspectRatio=True,
                 anchor="c",
+                mask="auto",
             )
         except Exception:
+            # If logo fails to draw for any reason, continue without it.
             pass
     y -= (banner_h + 0.25 * inch)
 
-    # Title + date
+    # Title + date (pretty) + timezone label
     c.setFont("Helvetica-Bold", 16)
     c.drawString(margin, y, "Strava Daily Report")
     y -= 0.28 * inch
 
     c.setFont("Helvetica", 11)
-    c.drawString(margin, y, f"Report date: {report_date} (America/Chicago)")
+    c.drawString(margin, y, f"Report date: {report_date_pretty} (Central Time)")
     y -= 0.28 * inch
 
     c.setFont("Helvetica", 9)
@@ -152,7 +188,7 @@ def main():
         c.showPage()
         y = height - margin
         c.setFont("Helvetica-Bold", 14)
-        c.drawString(margin, y, f"Strava Daily Report (continued) — {report_date}")
+        c.drawString(margin, y, f"Strava Daily Report (continued) — {report_date_pretty}")
         y -= 0.35 * inch
 
         c.setFont("Helvetica-Bold", 11)
@@ -164,7 +200,6 @@ def main():
 
         c.setFont("Helvetica", 9)
 
-    # Draw aligned rows across columns
     for i in range(max_lines):
         if y < y_min:
             new_page()
