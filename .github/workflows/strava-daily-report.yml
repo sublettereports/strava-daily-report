@@ -1,33 +1,62 @@
 name: Strava Daily Report
 
 on:
-  schedule:
-    - cron: "30 14 * * *" # 8:30 AM CST
   workflow_dispatch:
+  # DST-safe for 13:00 America/Chicago:
+  # - 18:00 UTC hits 13:00 during CDT
+  # - 19:00 UTC hits 13:00 during CST
+  schedule:
+    - cron: "0 18 * * *"
+    - cron: "0 19 * * *"
 
 jobs:
-  generate-and-send-report:
+  report:
     runs-on: ubuntu-latest
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v3
+      - name: Setup Node
+        uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: "20"
 
-      - name: Install dependencies
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Node dependencies
         run: npm install
 
-      - name: Generate PDF report
-        run: node src/generate-report.js
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
 
-      - name: Send report email
-        run: node src/email-report.js
+      - name: Fetch + summarize Strava (yesterday America/Chicago)
+        env:
+          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+          STRAVA_CLUB_ID: ${{ secrets.STRAVA_CLUB_ID }}
+        run: node fetch.js
+
+      - name: Generate PDF
+        env:
+          STRAVA_LOGO_URL: ${{ secrets.STRAVA_LOGO_URL }}
+        run: python daily-report.py
+
+      - name: Upload PDF artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: strava-daily-report
+          path: output/*.pdf
+          if-no-files-found: error
+
+      - name: Email report (BCC only)
         env:
           EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
           EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
           EMAIL_BCC: ${{ secrets.EMAIL_BCC }}
+        run: node email-report.js
