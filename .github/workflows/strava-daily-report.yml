@@ -2,12 +2,12 @@ name: Strava Daily Report
 
 on:
   workflow_dispatch:
-  # DST-safe for 13:00 America/Chicago:
-  # - 18:00 UTC hits 13:00 during CDT
-  # - 19:00 UTC hits 13:00 during CST
+  # DST-safe for 16:00 (4 PM) Central Time:
+  # - 22:00 UTC hits 16:00 during CDT
+  # - 23:00 UTC hits 16:00 during CST
   schedule:
-    - cron: "0 18 * * *"
-    - cron: "0 19 * * *"
+    - cron: "0 22 * * *"
+    - cron: "0 23 * * *"
 
 jobs:
   report:
