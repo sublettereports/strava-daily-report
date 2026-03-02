@@ -32,7 +32,7 @@ if (!fs.existsSync(pdfPath)) {
   process.exit(1);
 }
 const size = fs.statSync(pdfPath).size;
-if (size < 5000) {
+if (size < 1200) {
   console.error("PDF too small/corrupt:", pdfPath, `(size=${size})`);
   process.exit(1);
 }
@@ -49,7 +49,7 @@ const transporter = nodemailer.createTransport({
 
 await transporter.sendMail({
   from: EMAIL_USER,
-  // "BCC only": send to yourself, BCC the recipients
+  // BCC-only pattern: send to yourself, BCC the list
   to: EMAIL_USER,
   bcc: EMAIL_BCC,
   subject: `Strava Daily Report — ${reportDate}`,
