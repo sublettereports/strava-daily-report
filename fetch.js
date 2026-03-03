@@ -46,7 +46,7 @@ async function getJson(url, accessToken) {
   return res.json();
 }
 
-// Format a Date as YYYY-MM-DD in America/Chicago
+// YYYY-MM-DD in America/Chicago
 function ymdInTZ(dateObj) {
   return new Intl.DateTimeFormat("en-CA", {
     timeZone: TZ,
@@ -56,7 +56,7 @@ function ymdInTZ(dateObj) {
   }).format(dateObj);
 }
 
-// Yesterday's YYYY-MM-DD in America/Chicago (stable anchor = noon UTC)
+// Yesterday YYYY-MM-DD in America/Chicago (stable anchor = noon UTC)
 function yesterdayYMD() {
   const todayYMD = ymdInTZ(new Date());
   const [y, m, d] = todayYMD.split("-").map(Number);
@@ -65,60 +65,14 @@ function yesterdayYMD() {
   return ymdInTZ(new Date(ydayNoonUtcMs));
 }
 
-// Convert local midnight (YYYY-MM-DD 00:00:00 in America/Chicago) to UTC epoch seconds, DST-safe.
-function tzMidnightToUtcEpochSeconds(dateYYYYMMDD) {
-  const target = `${dateYYYYMMDD} 00:00:00`;
-
-  const fmt = new Intl.DateTimeFormat("en-CA", {
-    timeZone: TZ,
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hourCycle: "h23",
-  });
-
-  const [Y, M, D] = dateYYYYMMDD.split("-").map(Number);
-
-  let lo = Date.UTC(Y, M - 1, D, 0, 0, 0) - 36 * 3600 * 1000;
-  let hi = Date.UTC(Y, M - 1, D, 0, 0, 0) + 36 * 3600 * 1000;
-
-  function fmtStr(ms) {
-    const parts = fmt.formatToParts(new Date(ms));
-    const get = (type) => parts.find((p) => p.type === type)?.value;
-    return `${get("year")}-${get("month")}-${get("day")} ${get("hour")}:${get(
-      "minute"
-    )}:${get("second")}`;
-  }
-
-  while (hi - lo > 1000) {
-    const mid = Math.floor((lo + hi) / 2);
-    const s = fmtStr(mid);
-    if (s < target) lo = mid;
-    else hi = mid;
-  }
-
-  return Math.floor(hi / 1000);
-}
-
 function miles(meters) {
   return (Number(meters || 0) / 1609.344) || 0;
 }
 
-function activityStartUtcSeconds(a) {
-  const ms = Date.parse(a?.start_date);
+function activityDateInTZ(activity) {
+  const ms = Date.parse(activity?.start_date);
   if (Number.isNaN(ms)) return null;
-  return Math.floor(ms / 1000);
-}
-
-function fmtUtc(ts) {
-  try {
-    return new Date(ts * 1000).toISOString();
-  } catch {
-    return String(ts);
-  }
+  return ymdInTZ(new Date(ms));
 }
 
 async function main() {
@@ -133,18 +87,8 @@ async function main() {
   const accessToken = tokenData?.access_token;
   if (!accessToken) throw new Error("No access_token returned from Strava refresh.");
 
-  // Report date = yesterday in Chicago
   const reportDate = yesterdayYMD();
-  const startUtc = tzMidnightToUtcEpochSeconds(reportDate);
-
-  // Next date (YYYY-MM-DD) using noon-UTC anchor
-  const [Y, M, D] = reportDate.split("-").map(Number);
-  const reportNoonUtcMs = Date.UTC(Y, M - 1, D, 12, 0, 0);
-  const nextDate = ymdInTZ(new Date(reportNoonUtcMs + 24 * 3600 * 1000));
-  const endUtc = tzMidnightToUtcEpochSeconds(nextDate);
-
-  console.log(`Report date (local): ${reportDate} (${TZ})`);
-  console.log(`Window UTC: [${startUtc} ${fmtUtc(startUtc)}] -> [${endUtc} ${fmtUtc(endUtc)}]`);
+  console.log(`Report date (Central): ${reportDate} (${TZ})`);
 
   // Fetch members (paginate)
   const members = [];
@@ -159,60 +103,55 @@ async function main() {
   }
   if (members.length === 0) throw new Error("Fetched 0 club members. Check STRAVA_CLUB_ID / permissions.");
 
-  // Fetch club activities until we are sure we covered the report window
-  // Strategy: keep paging until the OLDEST activity fetched is older than startUtc
+  // Fetch club activities with paging until we've gone back past reportDate
   const activities = [];
   const perPage = 200;
-  const maxPages = 60; // guardrail
-  let oldestSeen = null;
+  const maxPages = 80; // guardrail
+  let oldestYMD = null;
 
   for (let page = 1; page <= maxPages; page++) {
     const chunk = await getJson(
       `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities?per_page=${perPage}&page=${page}`,
       accessToken
     );
-
     if (!Array.isArray(chunk) || chunk.length === 0) break;
 
     activities.push(...chunk);
 
-    // Update oldestSeen based on this chunk
+    // Track the oldest date (in Central) we have seen so far
     for (const a of chunk) {
-      const t = activityStartUtcSeconds(a);
-      if (t == null) continue;
-      oldestSeen = (oldestSeen == null) ? t : Math.min(oldestSeen, t);
+      const d = activityDateInTZ(a);
+      if (!d) continue;
+      oldestYMD = oldestYMD == null ? d : (d < oldestYMD ? d : oldestYMD);
     }
 
-    // If we have gone older than the report window start, we can stop early
-    if (oldestSeen != null && oldestSeen < startUtc) {
-      console.log(`Stopping early at page ${page}: oldestSeen=${fmtUtc(oldestSeen)} is older than startUtc=${fmtUtc(startUtc)}`);
+    // Stop once we've paged back earlier than the reportDate
+    if (oldestYMD != null && oldestYMD < reportDate) {
+      console.log(`Stopped paging at page ${page}: oldest fetched (Central) ${oldestYMD} < reportDate ${reportDate}`);
       break;
     }
 
-    if (chunk.length < perPage) break; // end of feed
+    if (chunk.length < perPage) break;
   }
 
   if (activities.length === 0) throw new Error("Fetched 0 club activities. Check STRAVA_CLUB_ID / permissions.");
 
-  // Filter to yesterday window
-  const filtered = activities.filter((a) => {
-    const t = activityStartUtcSeconds(a);
-    return t != null && t >= startUtc && t < endUtc;
-  });
+  // Filter by Central date equality (DST-safe and simple)
+  const filtered = activities.filter((a) => activityDateInTZ(a) === reportDate);
 
-  // Debug counts
-  const allTimes = activities
-    .map(activityStartUtcSeconds)
-    .filter((t) => t != null)
-    .sort((a, b) => a - b);
+  // Debug stats
+  const allDates = activities
+    .map(activityDateInTZ)
+    .filter((d) => d != null)
+    .sort();
 
-  const newest = allTimes.length ? allTimes[allTimes.length - 1] : null;
-  const oldest = allTimes.length ? allTimes[0] : null;
+  const newest = allDates.length ? allDates[allDates.length - 1] : null;
+  const oldest = allDates.length ? allDates[0] : null;
 
   console.log(`Activities fetched: ${activities.length}`);
-  console.log(`Activities newest: ${newest ? fmtUtc(newest) : "n/a"}`);
-  console.log(`Activities oldest: ${oldest ? fmtUtc(oldest) : "n/a"}`);
-  console.log(`Activities in window: ${filtered.length}`);
+  console.log(`Oldest activity date (Central): ${oldest ?? "n/a"}`);
+  console.log(`Newest activity date (Central): ${newest ?? "n/a"}`);
+  console.log(`Activities in reportDate (Central): ${filtered.length}`);
 
   // Roster
   const roster = members.map((m) => ({
@@ -242,7 +181,7 @@ async function main() {
     else if (t === "Hike") rec.Hike += dist;
   }
 
-  console.log("Activity types in window:", Object.fromEntries(typeCounts));
+  console.log("Activity types in reportDate:", Object.fromEntries(typeCounts));
 
   const rows = [];
   const inactive = [];
@@ -271,7 +210,6 @@ async function main() {
   const payload = {
     reportDate,
     timezone: TZ,
-    windowUtc: { startUtc, endUtc },
     totals: {
       members: roster.length,
       activitiesFetched: activities.length,
@@ -279,11 +217,10 @@ async function main() {
       activeMembers: rows.length,
       inactiveMembers: inactive.length,
     },
-    // Debug: helps verify window coverage when something looks off
     debug: {
-      fetchedOldestUtc: oldest ? fmtUtc(oldest) : null,
-      fetchedNewestUtc: newest ? fmtUtc(newest) : null,
-      typesInWindow: Object.fromEntries(typeCounts),
+      oldestFetchedCentral: oldest,
+      newestFetchedCentral: newest,
+      typesInReportDate: Object.fromEntries(typeCounts),
     },
     rows,
     inactive,
