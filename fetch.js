@@ -60,8 +60,6 @@ function ymdInTZ(dateObj) {
 function yesterdayYMD() {
   const todayYMD = ymdInTZ(new Date());
   const [y, m, d] = todayYMD.split("-").map(Number);
-
-  // Noon UTC anchor avoids “date slips” when formatting across timezones.
   const todayNoonUtcMs = Date.UTC(y, m - 1, d, 12, 0, 0);
   const ydayNoonUtcMs = todayNoonUtcMs - 24 * 3600 * 1000;
   return ymdInTZ(new Date(ydayNoonUtcMs));
@@ -84,7 +82,6 @@ function tzMidnightToUtcEpochSeconds(dateYYYYMMDD) {
 
   const [Y, M, D] = dateYYYYMMDD.split("-").map(Number);
 
-  // Search within ±36h around UTC midnight of that date
   let lo = Date.UTC(Y, M - 1, D, 0, 0, 0) - 36 * 3600 * 1000;
   let hi = Date.UTC(Y, M - 1, D, 0, 0, 0) + 36 * 3600 * 1000;
 
@@ -110,6 +107,20 @@ function miles(meters) {
   return (Number(meters || 0) / 1609.344) || 0;
 }
 
+function activityStartUtcSeconds(a) {
+  const ms = Date.parse(a?.start_date);
+  if (Number.isNaN(ms)) return null;
+  return Math.floor(ms / 1000);
+}
+
+function fmtUtc(ts) {
+  try {
+    return new Date(ts * 1000).toISOString();
+  } catch {
+    return String(ts);
+  }
+}
+
 async function main() {
   // Refresh access token
   const tokenData = await postForm("https://www.strava.com/oauth/token", {
@@ -122,22 +133,22 @@ async function main() {
   const accessToken = tokenData?.access_token;
   if (!accessToken) throw new Error("No access_token returned from Strava refresh.");
 
-  // Determine report date (yesterday in Chicago)
+  // Report date = yesterday in Chicago
   const reportDate = yesterdayYMD();
-
-  // DST-safe window: [start of reportDate local midnight, start of next date local midnight)
   const startUtc = tzMidnightToUtcEpochSeconds(reportDate);
 
-  // Compute next date YYYY-MM-DD using noon-UTC anchor again
+  // Next date (YYYY-MM-DD) using noon-UTC anchor
   const [Y, M, D] = reportDate.split("-").map(Number);
   const reportNoonUtcMs = Date.UTC(Y, M - 1, D, 12, 0, 0);
   const nextDate = ymdInTZ(new Date(reportNoonUtcMs + 24 * 3600 * 1000));
   const endUtc = tzMidnightToUtcEpochSeconds(nextDate);
 
-  // Fetch club members (for "No Activity")
-  // Note: some clubs exceed 200 members; keep simple but safe: paginate a bit.
+  console.log(`Report date (local): ${reportDate} (${TZ})`);
+  console.log(`Window UTC: [${startUtc} ${fmtUtc(startUtc)}] -> [${endUtc} ${fmtUtc(endUtc)}]`);
+
+  // Fetch members (paginate)
   const members = [];
-  for (let page = 1; page <= 10; page++) {
+  for (let page = 1; page <= 20; page++) {
     const chunk = await getJson(
       `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/members?per_page=200&page=${page}`,
       accessToken
@@ -148,47 +159,90 @@ async function main() {
   }
   if (members.length === 0) throw new Error("Fetched 0 club members. Check STRAVA_CLUB_ID / permissions.");
 
-  // Fetch club activities (pull recent pages, filter locally)
+  // Fetch club activities until we are sure we covered the report window
+  // Strategy: keep paging until the OLDEST activity fetched is older than startUtc
   const activities = [];
-  for (let page = 1; page <= 10; page++) {
+  const perPage = 200;
+  const maxPages = 60; // guardrail
+  let oldestSeen = null;
+
+  for (let page = 1; page <= maxPages; page++) {
     const chunk = await getJson(
-      `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities?per_page=200&page=${page}`,
+      `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities?per_page=${perPage}&page=${page}`,
       accessToken
     );
+
     if (!Array.isArray(chunk) || chunk.length === 0) break;
+
     activities.push(...chunk);
-    if (chunk.length < 200) break;
+
+    // Update oldestSeen based on this chunk
+    for (const a of chunk) {
+      const t = activityStartUtcSeconds(a);
+      if (t == null) continue;
+      oldestSeen = (oldestSeen == null) ? t : Math.min(oldestSeen, t);
+    }
+
+    // If we have gone older than the report window start, we can stop early
+    if (oldestSeen != null && oldestSeen < startUtc) {
+      console.log(`Stopping early at page ${page}: oldestSeen=${fmtUtc(oldestSeen)} is older than startUtc=${fmtUtc(startUtc)}`);
+      break;
+    }
+
+    if (chunk.length < perPage) break; // end of feed
   }
+
   if (activities.length === 0) throw new Error("Fetched 0 club activities. Check STRAVA_CLUB_ID / permissions.");
 
+  // Filter to yesterday window
   const filtered = activities.filter((a) => {
-    const t = Math.floor(Date.parse(a?.start_date) / 1000);
-    return Number.isFinite(t) && t >= startUtc && t < endUtc;
+    const t = activityStartUtcSeconds(a);
+    return t != null && t >= startUtc && t < endUtc;
   });
 
-  // Roster map
+  // Debug counts
+  const allTimes = activities
+    .map(activityStartUtcSeconds)
+    .filter((t) => t != null)
+    .sort((a, b) => a - b);
+
+  const newest = allTimes.length ? allTimes[allTimes.length - 1] : null;
+  const oldest = allTimes.length ? allTimes[0] : null;
+
+  console.log(`Activities fetched: ${activities.length}`);
+  console.log(`Activities newest: ${newest ? fmtUtc(newest) : "n/a"}`);
+  console.log(`Activities oldest: ${oldest ? fmtUtc(oldest) : "n/a"}`);
+  console.log(`Activities in window: ${filtered.length}`);
+
+  // Roster
   const roster = members.map((m) => ({
     id: String(m.id),
     name: `${m.firstname || ""} ${m.lastname || ""}`.trim() || `Member ${m.id}`,
   }));
-  const rosterById = new Map(roster.map((r) => [r.id, r.name]));
 
   // Aggregate by athlete id
   const byId = new Map(); // id -> {Walk,Run,Ride,Hike}
+  const typeCounts = new Map();
+
   for (const a of filtered) {
     const id = String(a?.athlete?.id ?? "");
     if (!id) continue;
+
+    const t = String(a?.type ?? "");
+    typeCounts.set(t, (typeCounts.get(t) || 0) + 1);
 
     if (!byId.has(id)) byId.set(id, { Walk: 0, Run: 0, Ride: 0, Hike: 0 });
 
     const rec = byId.get(id);
     const dist = miles(a?.distance);
 
-    if (a?.type === "Walk") rec.Walk += dist;
-    else if (a?.type === "Run") rec.Run += dist;
-    else if (a?.type === "Ride") rec.Ride += dist;
-    else if (a?.type === "Hike") rec.Hike += dist;
+    if (t === "Walk") rec.Walk += dist;
+    else if (t === "Run") rec.Run += dist;
+    else if (t === "Ride") rec.Ride += dist;
+    else if (t === "Hike") rec.Hike += dist;
   }
+
+  console.log("Activity types in window:", Object.fromEntries(typeCounts));
 
   const rows = [];
   const inactive = [];
@@ -225,15 +279,18 @@ async function main() {
       activeMembers: rows.length,
       inactiveMembers: inactive.length,
     },
+    // Debug: helps verify window coverage when something looks off
+    debug: {
+      fetchedOldestUtc: oldest ? fmtUtc(oldest) : null,
+      fetchedNewestUtc: newest ? fmtUtc(newest) : null,
+      typesInWindow: Object.fromEntries(typeCounts),
+    },
     rows,
     inactive,
   };
 
   fs.writeFileSync("report-data.json", JSON.stringify(payload, null, 2), "utf8");
   console.log(`report-data.json written for ${reportDate}`);
-  console.log(
-    `Members=${payload.totals.members} Active=${payload.totals.activeMembers} NoActivity=${payload.totals.inactiveMembers} ActivitiesInWindow=${payload.totals.activitiesInWindow}`
-  );
 }
 
 await main();
