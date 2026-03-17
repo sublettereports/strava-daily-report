@@ -3,8 +3,8 @@ name: Strava Daily Report
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 22 * * *" # 4:00 PM Central Standard Time
-    - cron: "0 21 * * *" # 4:00 PM Central Daylight Time
+    - cron: "0 22 * * *" # 4:00 PM CST
+    - cron: "0 21 * * *" # 4:00 PM CDT
 
 jobs:
   build-report:
@@ -34,7 +34,6 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-          cache: "npm"
 
       - name: Install dependencies
         run: npm install
