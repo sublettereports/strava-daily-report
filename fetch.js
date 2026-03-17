@@ -11,12 +11,16 @@ need("STRAVA_CLIENT_ID");
 need("STRAVA_CLIENT_SECRET");
 need("STRAVA_REFRESH_TOKEN");
 need("STRAVA_CLUB_ID");
+need("WORKER_REPORT_URL");
+need("REPORT_API_TOKEN");
 
 const {
   STRAVA_CLIENT_ID,
   STRAVA_CLIENT_SECRET,
   STRAVA_REFRESH_TOKEN,
   STRAVA_CLUB_ID,
+  WORKER_REPORT_URL,
+  REPORT_API_TOKEN,
 } = process.env;
 
 const TZ = "America/Chicago";
@@ -36,9 +40,8 @@ async function postForm(url, formObj) {
 }
 
 async function getJson(url, accessToken) {
-  const res = await fetch(url, {
-    headers: { Authorization: `Bearer ${accessToken}` },
-  });
+  const headers = accessToken ? { Authorization: `Bearer ${accessToken}` } : {};
+  const res = await fetch(url, { headers });
   if (!res.ok) {
     const txt = await res.text().catch(() => "");
     throw new Error(`GET ${url} failed: ${res.status} ${res.statusText}\n${txt}`);
@@ -69,48 +72,8 @@ function miles(meters) {
   return (Number(meters || 0) / 1609.344) || 0;
 }
 
-function parseAnyDateToMs(v) {
-  if (!v) return null;
-  if (typeof v === "number") {
-    // Might be seconds or ms; guess
-    if (v > 1e12) return v;        // ms
-    if (v > 1e9) return v * 1000;  // seconds
-    return null;
-  }
-  if (typeof v === "string") {
-    const ms = Date.parse(v);
-    if (!Number.isNaN(ms)) return ms;
-  }
-  return null;
-}
-
-function activityStartMs(activity) {
-  // Try common fields in order
-  const candidates = [
-    activity?.start_date,
-    activity?.start_date_local,
-    activity?.startDate,          // sometimes camelCase in wrappers
-    activity?.startDateLocal,
-    activity?.start_time,
-    activity?.startTime,
-    activity?.activity?.start_date,
-    activity?.activity?.start_date_local,
-  ];
-
-  for (const c of candidates) {
-    const ms = parseAnyDateToMs(c);
-    if (ms != null) return ms;
-  }
-  return null;
-}
-
-function activityDateInTZ(activity) {
-  const ms = activityStartMs(activity);
-  if (ms == null) return null;
-  return ymdInTZ(new Date(ms));
-}
-
 async function main() {
+  // Still use Strava OAuth for club roster lookup
   const tokenData = await postForm("https://www.strava.com/oauth/token", {
     client_id: STRAVA_CLIENT_ID,
     client_secret: STRAVA_CLIENT_SECRET,
@@ -135,60 +98,29 @@ async function main() {
     members.push(...chunk);
     if (chunk.length < 200) break;
   }
-  if (members.length === 0) throw new Error("Fetched 0 club members. Check STRAVA_CLUB_ID / permissions.");
 
-  // Activities (start with just the first page to diagnose)
-  const activities = await getJson(
-    `https://www.strava.com/api/v3/clubs/${STRAVA_CLUB_ID}/activities?per_page=200&page=1`,
-    accessToken
-  );
-
-  if (!Array.isArray(activities) || activities.length === 0) {
-    throw new Error("Fetched 0 club activities. Check STRAVA_CLUB_ID / permissions.");
+  if (members.length === 0) {
+    throw new Error("Fetched 0 club members. Check STRAVA_CLUB_ID / permissions.");
   }
 
-  console.log(`Activities fetched: ${activities.length}`);
+  console.log(`Members fetched: ${members.length}`);
 
-  // Diagnostic: show keys + a trimmed sample of first activity
-  const first = activities[0];
-  console.log("FIRST ACTIVITY KEYS:", Object.keys(first));
+  // Activities now come from the Cloudflare Worker report endpoint
+  const reportUrl =
+    `${WORKER_REPORT_URL}?date=${encodeURIComponent(reportDate)}&token=${encodeURIComponent(REPORT_API_TOKEN)}`;
 
-  // Print a trimmed sample (avoid huge output)
-  const sample = {
-    id: first?.id,
-    name: first?.name,
-    type: first?.type,
-    sport_type: first?.sport_type,
-    start_date: first?.start_date,
-    start_date_local: first?.start_date_local,
-    start_time: first?.start_time,
-    athlete: first?.athlete,
-    distance: first?.distance,
-    raw: first,
-  };
-  console.log("FIRST ACTIVITY SAMPLE:", JSON.stringify(sample, null, 2).slice(0, 4000));
+  const reportJson = await getJson(reportUrl, null);
+  const activities = Array.isArray(reportJson?.activities) ? reportJson.activities : [];
 
-  // Now filter by Central date equality
-  const filtered = activities.filter((a) => activityDateInTZ(a) === reportDate);
+  console.log(`Activities fetched from worker: ${activities.length}`);
 
-  const parsedDates = activities
-    .map(activityDateInTZ)
-    .filter((d) => d != null)
-    .sort();
-
-  const oldest = parsedDates.length ? parsedDates[0] : null;
-  const newest = parsedDates.length ? parsedDates[parsedDates.length - 1] : null;
-
-  console.log(`Oldest activity date (Central): ${oldest ?? "n/a"}`);
-  console.log(`Newest activity date (Central): ${newest ?? "n/a"}`);
-  console.log(`Activities in reportDate (Central): ${filtered.length}`);
-
-  // If we still can't parse ANY activity date, fail loud with a clear message
-  if (parsedDates.length === 0) {
-    throw new Error(
-      "Could not parse activity timestamps from Strava club activities response. " +
-      "See FIRST ACTIVITY SAMPLE in logs; we need to map the correct timestamp field."
+  if (activities.length > 0) {
+    console.log(
+      "FIRST ACTIVITY SAMPLE:",
+      JSON.stringify(activities[0], null, 2).slice(0, 4000)
     );
+  } else {
+    console.log("FIRST ACTIVITY SAMPLE: none");
   }
 
   // Roster
@@ -201,17 +133,17 @@ async function main() {
   const byId = new Map();
   const typeCounts = new Map();
 
-  for (const a of filtered) {
-    const id = String(a?.athlete?.id ?? "");
+  for (const a of activities) {
+    const id = String(a?.athlete_id ?? "");
     if (!id) continue;
 
-    const t = String(a?.type ?? a?.sport_type ?? "");
+    const t = String(a?.type ?? "");
     typeCounts.set(t, (typeCounts.get(t) || 0) + 1);
 
     if (!byId.has(id)) byId.set(id, { Walk: 0, Run: 0, Ride: 0, Hike: 0 });
 
     const rec = byId.get(id);
-    const dist = miles(a?.distance);
+    const dist = miles(a?.distance_m);
 
     if (t === "Walk") rec.Walk += dist;
     else if (t === "Run") rec.Run += dist;
@@ -251,14 +183,13 @@ async function main() {
     totals: {
       members: roster.length,
       activitiesFetched: activities.length,
-      activitiesInWindow: filtered.length,
+      activitiesInWindow: activities.length,
       activeMembers: rows.length,
       inactiveMembers: inactive.length,
     },
     debug: {
-      oldestFetchedCentral: oldest,
-      newestFetchedCentral: newest,
-      firstActivityKeys: Object.keys(first),
+      workerReportUrl: WORKER_REPORT_URL,
+      firstActivityKeys: activities[0] ? Object.keys(activities[0]) : [],
     },
     rows,
     inactive,
