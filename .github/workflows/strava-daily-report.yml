@@ -2,61 +2,58 @@ name: Strava Daily Report
 
 on:
   workflow_dispatch:
-  # DST-safe for 16:00 (4 PM) Central Time:
-  # - 22:00 UTC hits 16:00 during CDT
-  # - 23:00 UTC hits 16:00 during CST
   schedule:
-    - cron: "0 22 * * *"
-    - cron: "0 23 * * *"
+    - cron: "0 22 * * *" # 4:00 PM Central Standard Time
+    - cron: "0 21 * * *" # 4:00 PM Central Daylight Time
 
 jobs:
-  report:
+  build-report:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    env:
+      STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
+      STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
+      STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
+      STRAVA_CLUB_ID: ${{ secrets.STRAVA_CLUB_ID }}
+      EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
+      EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
+      EMAIL_USER: ${{ secrets.EMAIL_USER }}
+      EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+      EMAIL_BCC: ${{ secrets.EMAIL_BCC }}
+      STRAVA_LOGO_URL: ${{ secrets.STRAVA_LOGO_URL }}
+      WORKER_REPORT_URL: ${{ secrets.WORKER_REPORT_URL }}
+      REPORT_API_TOKEN: ${{ secrets.REPORT_API_TOKEN }}
+      TZ: America/Chicago
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Setup Node
+      - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: "npm"
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+      - name: Install dependencies
+        run: npm ci
 
-      - name: Install Node dependencies
-        run: npm install
-
-      - name: Install Python dependencies
-        run: pip install -r requirements.txt
-
-      - name: Fetch + summarize Strava (yesterday America/Chicago)
-        env:
-          STRAVA_CLIENT_ID: ${{ secrets.STRAVA_CLIENT_ID }}
-          STRAVA_CLIENT_SECRET: ${{ secrets.STRAVA_CLIENT_SECRET }}
-          STRAVA_REFRESH_TOKEN: ${{ secrets.STRAVA_REFRESH_TOKEN }}
-          STRAVA_CLUB_ID: ${{ secrets.STRAVA_CLUB_ID }}
+      - name: Fetch report data
         run: node fetch.js
 
       - name: Generate PDF
-        env:
-          STRAVA_LOGO_URL: ${{ secrets.STRAVA_LOGO_URL }}
-        run: python daily-report.py
+        run: node generate-pdf.js
 
-      - name: Upload PDF artifact
+      - name: Send email
+        run: node send-email.js
+
+      - name: Upload report artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: strava-daily-report
-          path: output/*.pdf
-          if-no-files-found: error
-
-      - name: Email report (BCC only)
-        env:
-          EMAIL_HOST: ${{ secrets.EMAIL_HOST }}
-          EMAIL_PORT: ${{ secrets.EMAIL_PORT }}
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-          EMAIL_BCC: ${{ secrets.EMAIL_BCC }}
-        run: node email-report.js
+          path: |
+            report-data.json
+            *.pdf
+          if-no-files-found: warn
