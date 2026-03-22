@@ -90,40 +90,39 @@ async function getClubActivities(accessToken, clubId) {
   return fetchAllPages(`https://www.strava.com/api/v3/clubs/${clubId}/activities`, accessToken);
 }
 
-function getChicagoWindowInfo() {
+function getPreviousChicagoDayWindow() {
   const now = new Date();
-  const chicagoNowString = now.toLocaleString('en-US', { timeZone: 'America/Chicago' });
-  const chicagoNow = new Date(chicagoNowString);
 
-  const end = new Date(chicagoNow);
-  end.setHours(16, 0, 0, 0);
+  const chicagoParts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(now);
 
-  if (chicagoNow < end) {
-    end.setDate(end.getDate() - 1);
-  }
+  const year = Number(chicagoParts.find(p => p.type === 'year').value);
+  const month = Number(chicagoParts.find(p => p.type === 'month').value);
+  const day = Number(chicagoParts.find(p => p.type === 'day').value);
 
-  const start = new Date(end);
-  start.setDate(start.getDate() - 1);
+  const todayChicagoDateUtc = new Date(Date.UTC(year, month - 1, day));
+  const previousChicagoDateUtc = new Date(todayChicagoDateUtc.getTime() - 24 * 60 * 60 * 1000);
+
+  const prevYear = previousChicagoDateUtc.getUTCFullYear();
+  const prevMonth = String(previousChicagoDateUtc.getUTCMonth() + 1).padStart(2, '0');
+  const prevDay = String(previousChicagoDateUtc.getUTCDate()).padStart(2, '0');
+
+  const isoDate = `${prevYear}-${prevMonth}-${prevDay}`;
 
   const prettyDate = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Chicago',
     year: 'numeric',
     month: 'long',
     day: 'numeric'
-  }).format(start);
-
-  const fileDate = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).format(start);
+  }).format(previousChicagoDateUtc);
 
   return {
-    start,
-    end,
-    prettyDate,
-    fileDate
+    isoDate,
+    prettyDate
   };
 }
 
@@ -165,17 +164,12 @@ function bucketForSportType(sportType) {
   return null;
 }
 
-function isActivityInWindow(activity, start, end) {
-  const dateString = activity.start_date || activity.start_date_local;
-  if (!dateString) {
-    return false;
-  }
-
-  const activityTime = new Date(dateString);
-  return activityTime >= start && activityTime < end;
+function activityMatchesReportDate(activity, isoDate) {
+  const local = String(activity.start_date_local || '');
+  return local.startsWith(isoDate);
 }
 
-function buildReportData(members, activities, start, end) {
+function buildReportData(members, activities, reportIsoDate) {
   const memberNames = members.map(getMemberName);
 
   const categories = {
@@ -188,7 +182,7 @@ function buildReportData(members, activities, start, end) {
   const activeNames = new Set();
 
   for (const activity of activities) {
-    if (!isActivityInWindow(activity, start, end)) {
+    if (!activityMatchesReportDate(activity, reportIsoDate)) {
       continue;
     }
 
@@ -461,11 +455,9 @@ async function runReport() {
   validateEnv();
 
   const clubId = requireEnv('STRAVA_CLUB_ID');
-  const { start, end, prettyDate, fileDate } = getChicagoWindowInfo();
+  const { isoDate, prettyDate } = getPreviousChicagoDayWindow();
 
-  console.log(`Building report for ${prettyDate}`);
-  console.log(`Window start: ${start.toISOString()}`);
-  console.log(`Window end: ${end.toISOString()}`);
+  console.log(`Building report for ${prettyDate} (${isoDate})`);
 
   const accessToken = await getAccessToken();
   const [members, activities] = await Promise.all([
@@ -476,9 +468,9 @@ async function runReport() {
   console.log(`Members fetched: ${members.length}`);
   console.log(`Recent club activities fetched: ${activities.length}`);
 
-  const reportData = buildReportData(members, activities, start, end);
+  const reportData = buildReportData(members, activities, isoDate);
 
-  const outputFile = path.join(process.cwd(), `strava-daily-report-${fileDate}.pdf`);
+  const outputFile = path.join(process.cwd(), `strava-daily-report-${isoDate}.pdf`);
 
   await createPdf(reportData, prettyDate, outputFile);
   console.log(`PDF created: ${outputFile}`);
