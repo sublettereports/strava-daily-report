@@ -4,8 +4,6 @@ const nodemailer = require('nodemailer');
 const fs = require('fs');
 const path = require('path');
 
-const DEBUG = true;
-
 const REQUIRED_ENV_VARS = [
   'STRAVA_CLIENT_ID',
   'STRAVA_CLIENT_SECRET',
@@ -32,57 +30,6 @@ function validateEnv() {
   }
 }
 
-function debugLog(label, value) {
-  if (!DEBUG) return;
-
-  try {
-    console.log(`\n========== ${label} ==========`);
-    if (typeof value === 'string') {
-      console.log(value);
-    } else {
-      console.log(JSON.stringify(value, null, 2));
-    }
-    console.log(`========== END ${label} ==========\n`);
-  } catch (error) {
-    console.log(`\n========== ${label} ==========`);
-    console.log(value);
-    console.log(`========== END ${label} ==========\n`);
-  }
-}
-
-function safeMiles(meters) {
-  return Number(((Number(meters) || 0) * 0.000621371).toFixed(2));
-}
-
-function summarizeMember(member) {
-  return {
-    id: member?.id ?? null,
-    firstname: member?.firstname ?? null,
-    lastname: member?.lastname ?? null,
-    name: getMemberName(member),
-    username: member?.username ?? null,
-    resource_state: member?.resource_state ?? null
-  };
-}
-
-function summarizeActivity(activity) {
-  return {
-    id: activity?.id ?? null,
-    name: activity?.name ?? null,
-    type: activity?.type ?? null,
-    sport_type: activity?.sport_type ?? null,
-    distance_meters: activity?.distance ?? 0,
-    distance_miles: safeMiles(activity?.distance),
-    start_date: activity?.start_date ?? null,
-    start_date_local: activity?.start_date_local ?? null,
-    timezone: activity?.timezone ?? null,
-    athlete_id: activity?.athlete?.id ?? null,
-    athlete_firstname: activity?.athlete?.firstname ?? null,
-    athlete_lastname: activity?.athlete?.lastname ?? null,
-    athlete_name: getActivityAthleteName(activity)
-  };
-}
-
 async function getAccessToken() {
   const response = await axios.post(
     'https://www.strava.com/oauth/token',
@@ -105,7 +52,7 @@ async function getAccessToken() {
   return response.data.access_token;
 }
 
-async function fetchAllPages(url, accessToken, label = 'FETCH') {
+async function fetchAllPages(url, accessToken) {
   const all = [];
   let page = 1;
   const perPage = 200;
@@ -123,15 +70,6 @@ async function fetchAllPages(url, accessToken, label = 'FETCH') {
     });
 
     const rows = Array.isArray(response.data) ? response.data : [];
-
-    debugLog(`${label} PAGE`, {
-      url,
-      page,
-      perPage,
-      rowsFetched: rows.length,
-      firstFew: rows.slice(0, 5)
-    });
-
     all.push(...rows);
 
     if (rows.length < perPage) {
@@ -141,28 +79,15 @@ async function fetchAllPages(url, accessToken, label = 'FETCH') {
     page += 1;
   }
 
-  debugLog(`${label} COMPLETE`, {
-    url,
-    totalRows: all.length
-  });
-
   return all;
 }
 
 async function getClubMembers(accessToken, clubId) {
-  return fetchAllPages(
-    `https://www.strava.com/api/v3/clubs/${clubId}/members`,
-    accessToken,
-    'CLUB MEMBERS'
-  );
+  return fetchAllPages(`https://www.strava.com/api/v3/clubs/${clubId}/members`, accessToken);
 }
 
 async function getClubActivities(accessToken, clubId) {
-  return fetchAllPages(
-    `https://www.strava.com/api/v3/clubs/${clubId}/activities`,
-    accessToken,
-    'CLUB ACTIVITIES'
-  );
+  return fetchAllPages(`https://www.strava.com/api/v3/clubs/${clubId}/activities`, accessToken);
 }
 
 function getPreviousChicagoDayInfo() {
@@ -194,18 +119,6 @@ function getPreviousChicagoDayInfo() {
   ];
 
   const prettyDate = `${monthNames[reportMonth - 1]} ${reportDay}, ${reportYear}`;
-
-  debugLog('REPORT DATE WINDOW', {
-    nowSystem: now.toString(),
-    nowISO: now.toISOString(),
-    chicagoYear: year,
-    chicagoMonth: month,
-    chicagoDay: day,
-    chicagoTodayUtc: chicagoTodayUtc.toISOString(),
-    chicagoYesterdayUtc: chicagoYesterdayUtc.toISOString(),
-    isoDate,
-    prettyDate
-  });
 
   return {
     isoDate,
@@ -251,11 +164,6 @@ function bucketForSportType(sportType) {
   return null;
 }
 
-function activityMatchesReportDate(activity, isoDate) {
-  const local = String(activity.start_date_local || '');
-  return local.startsWith(isoDate);
-}
-
 function normalizeName(name) {
   return String(name || '')
     .trim()
@@ -281,7 +189,7 @@ function buildActivityKey(activity) {
   return `name:${normalizeName(name)}`;
 }
 
-function buildReportData(members, activities, reportIsoDate) {
+function buildReportData(members, activities) {
   const memberMap = new Map();
 
   for (const member of members) {
@@ -296,42 +204,6 @@ function buildReportData(members, activities, reportIsoDate) {
     }
   }
 
-  debugLog('MEMBER MAP SUMMARY', {
-    totalMembers: members.length,
-    uniqueMemberKeys: memberMap.size,
-    sampleMembers: members.slice(0, 15).map(member => ({
-      summary: summarizeMember(member),
-      memberKey: buildMemberKey(member),
-      normalizedName: normalizeName(getMemberName(member))
-    }))
-  });
-
-  debugLog('RAW ACTIVITIES SUMMARY', {
-    totalActivities: activities.length,
-    sampleActivities: activities.slice(0, 25).map(activity => ({
-      summary: summarizeActivity(activity),
-      activityKey: buildActivityKey(activity),
-      normalizedAthleteName: normalizeName(getActivityAthleteName(activity)),
-      matchesReportDate: activityMatchesReportDate(activity, reportIsoDate),
-      normalizedSportType: normalizeSportType(activity),
-      bucket: bucketForSportType(normalizeSportType(activity))
-    }))
-  });
-
-  const filteredActivities = activities.filter(activity => activityMatchesReportDate(activity, reportIsoDate));
-
-  debugLog('FILTERED ACTIVITIES SUMMARY', {
-    reportIsoDate,
-    filteredCount: filteredActivities.length,
-    sampleFilteredActivities: filteredActivities.slice(0, 25).map(activity => ({
-      summary: summarizeActivity(activity),
-      activityKey: buildActivityKey(activity),
-      normalizedAthleteName: normalizeName(getActivityAthleteName(activity)),
-      normalizedSportType: normalizeSportType(activity),
-      bucket: bucketForSportType(normalizeSportType(activity))
-    }))
-  });
-
   const categories = {
     walk: new Map(),
     run: new Map(),
@@ -341,36 +213,21 @@ function buildReportData(members, activities, reportIsoDate) {
 
   const activeKeys = new Set();
 
-  for (const activity of filteredActivities) {
+  for (const activity of activities) {
     const category = bucketForSportType(normalizeSportType(activity));
-
     if (!category) {
-      debugLog('SKIPPED ACTIVITY - NO CATEGORY', {
-        reportIsoDate,
-        activity: summarizeActivity(activity),
-        normalizedSportType: normalizeSportType(activity)
-      });
       continue;
     }
 
     const activityKey = buildActivityKey(activity);
     let member = memberMap.get(activityKey);
-    let matchType = 'id';
 
     if (!member) {
       const fallbackNameKey = `name:${normalizeName(getActivityAthleteName(activity))}`;
       member = memberMap.get(fallbackNameKey);
-      matchType = 'name';
     }
 
     if (!member) {
-      debugLog('UNMATCHED ACTIVITY', {
-        reportIsoDate,
-        activity: summarizeActivity(activity),
-        activityKey,
-        fallbackNameKey: `name:${normalizeName(getActivityAthleteName(activity))}`,
-        availableMemberKeySamples: Array.from(memberMap.keys()).slice(0, 25)
-      });
       continue;
     }
 
@@ -384,43 +241,7 @@ function buildReportData(members, activities, reportIsoDate) {
 
     current.miles += miles;
     categories[category].set(member.key, current);
-
-    debugLog('MATCHED ACTIVITY', {
-      reportIsoDate,
-      matchType,
-      category,
-      member,
-      activity: summarizeActivity(activity),
-      milesAdded: safeMiles(activity.distance),
-      memberRunningTotal: Number(current.miles.toFixed(2))
-    });
   }
-
-  const memberMatchDiagnostics = members.slice(0, 25).map(member => {
-    const memberIdKey = member && member.id != null ? `id:${String(member.id)}` : null;
-    const memberNameKey = `name:${normalizeName(getMemberName(member))}`;
-
-    const matchedById = filteredActivities.filter(activity => {
-      if (memberIdKey == null) return false;
-      return buildActivityKey(activity) === memberIdKey;
-    });
-
-    const matchedByName = filteredActivities.filter(activity => {
-      return `name:${normalizeName(getActivityAthleteName(activity))}` === memberNameKey;
-    });
-
-    return {
-      member: summarizeMember(member),
-      memberIdKey,
-      memberNameKey,
-      matchedByIdCount: matchedById.length,
-      matchedByNameCount: matchedByName.length,
-      matchedById: matchedById.slice(0, 10).map(summarizeActivity),
-      matchedByName: matchedByName.slice(0, 10).map(summarizeActivity)
-    };
-  });
-
-  debugLog('MEMBER MATCH CHECKS', memberMatchDiagnostics);
 
   const walk = Array.from(categories.walk.values())
     .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
@@ -441,23 +262,6 @@ function buildReportData(members, activities, reportIsoDate) {
       miles: 0
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
-
-  debugLog('FINAL CATEGORY COUNTS', {
-    walk: walk.length,
-    run: run.length,
-    ride: ride.length,
-    hike: hike.length,
-    noActivity: noActivity.length,
-    activeKeys: activeKeys.size
-  });
-
-  debugLog('FINAL CATEGORY SAMPLES', {
-    walk: walk.slice(0, 15),
-    run: run.slice(0, 15),
-    ride: ride.slice(0, 15),
-    hike: hike.slice(0, 15),
-    noActivity: noActivity.slice(0, 15)
-  });
 
   return { walk, run, ride, hike, noActivity };
 }
@@ -698,12 +502,6 @@ async function runReport() {
   console.log(`Building report for ${prettyDate} (${isoDate})`);
 
   const accessToken = await getAccessToken();
-
-  debugLog('ACCESS TOKEN RECEIVED', {
-    received: Boolean(accessToken),
-    tokenLength: accessToken ? accessToken.length : 0
-  });
-
   const [members, activities] = await Promise.all([
     getClubMembers(accessToken, clubId),
     getClubActivities(accessToken, clubId)
@@ -712,14 +510,7 @@ async function runReport() {
   console.log(`Members fetched: ${members.length}`);
   console.log(`Recent club activities fetched: ${activities.length}`);
 
-  debugLog('TOP LEVEL FETCH SUMMARY', {
-    membersCount: members.length,
-    activitiesCount: activities.length,
-    memberSample: members.slice(0, 15).map(summarizeMember),
-    activitySample: activities.slice(0, 25).map(summarizeActivity)
-  });
-
-  const reportData = buildReportData(members, activities, isoDate);
+  const reportData = buildReportData(members, activities);
 
   console.log(`Walk entries: ${reportData.walk.length}`);
   console.log(`Run entries: ${reportData.run.length}`);
