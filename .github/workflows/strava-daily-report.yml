@@ -42,7 +42,7 @@ jobs:
         run: node fetch.js
 
       - name: Generate PDF
-        run: node daily-report.js
+        run: node daily-report.cjs
 
       - name: Send email
         run: node email-report.js
