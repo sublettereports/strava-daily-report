@@ -2,8 +2,8 @@ name: Strava Daily Report
 
 on:
   schedule:
-    - cron: '30 13 * * *' # 8:30 AM Central (adjusts for UTC)
-  workflow_dispatch: # allows manual run
+    - cron: '30 13 * * *' # 8:30 AM Central (UTC time)
+  workflow_dispatch:
 
 jobs:
   run-report:
