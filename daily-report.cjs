@@ -141,6 +141,14 @@ function getMemberName(member) {
   return full || 'Unnamed Athlete';
 }
 
+function getActivityAthleteName(activity) {
+  const athlete = activity.athlete || {};
+  const first = (athlete.firstname || '').trim();
+  const last = (athlete.lastname || '').trim();
+  const full = `${first} ${last}`.trim();
+  return full || 'Unnamed Athlete';
+}
+
 function normalizeSportType(activity) {
   return String(activity.sport_type || activity.type || '').trim();
 }
@@ -161,30 +169,45 @@ function activityMatchesReportDate(activity, isoDate) {
   return local.startsWith(isoDate);
 }
 
-function buildMemberLookup(members) {
-  const byId = new Map();
+function normalizeName(name) {
+  return String(name || '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
 
-  for (const member of members) {
-    if (member && member.id != null) {
-      byId.set(String(member.id), {
-        id: String(member.id),
-        name: getMemberName(member)
-      });
-    }
+function buildMemberKey(member) {
+  if (member && member.id != null) {
+    return `id:${String(member.id)}`;
   }
 
-  return byId;
+  const name = getMemberName(member);
+  return `name:${normalizeName(name)}`;
+}
+
+function buildActivityKey(activity) {
+  if (activity && activity.athlete && activity.athlete.id != null) {
+    return `id:${String(activity.athlete.id)}`;
+  }
+
+  const name = getActivityAthleteName(activity);
+  return `name:${normalizeName(name)}`;
 }
 
 function buildReportData(members, activities, reportIsoDate) {
-  const memberLookup = buildMemberLookup(members);
+  const memberMap = new Map();
 
-  const allMembers = members
-    .map(member => ({
-      id: member && member.id != null ? String(member.id) : null,
-      name: getMemberName(member)
-    }))
-    .filter(member => member.id);
+  for (const member of members) {
+    const key = buildMemberKey(member);
+    const name = getMemberName(member);
+
+    if (!memberMap.has(key)) {
+      memberMap.set(key, {
+        key,
+        name
+      });
+    }
+  }
 
   const categories = {
     walk: new Map(),
@@ -193,7 +216,7 @@ function buildReportData(members, activities, reportIsoDate) {
     hike: new Map()
   };
 
-  const activeMemberIds = new Set();
+  const activeKeys = new Set();
 
   for (const activity of activities) {
     if (!activityMatchesReportDate(activity, reportIsoDate)) {
@@ -205,30 +228,28 @@ function buildReportData(members, activities, reportIsoDate) {
       continue;
     }
 
-    const athleteId = activity && activity.athlete && activity.athlete.id != null
-      ? String(activity.athlete.id)
-      : null;
+    const activityKey = buildActivityKey(activity);
+    let member = memberMap.get(activityKey);
 
-    if (!athleteId) {
-      continue;
+    if (!member) {
+      const fallbackNameKey = `name:${normalizeName(getActivityAthleteName(activity))}`;
+      member = memberMap.get(fallbackNameKey);
     }
 
-    const member = memberLookup.get(athleteId);
     if (!member) {
       continue;
     }
 
     const miles = metersToMiles(activity.distance);
-    activeMemberIds.add(athleteId);
+    activeKeys.add(member.key);
 
-    const current = categories[category].get(athleteId) || {
-      id: athleteId,
+    const current = categories[category].get(member.key) || {
       name: member.name,
       miles: 0
     };
 
     current.miles += miles;
-    categories[category].set(athleteId, current);
+    categories[category].set(member.key, current);
   }
 
   const walk = Array.from(categories.walk.values())
@@ -243,18 +264,15 @@ function buildReportData(members, activities, reportIsoDate) {
   const hike = Array.from(categories.hike.values())
     .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
 
-  const noActivity = allMembers
-    .filter(member => !activeMemberIds.has(member.id))
-    .map(member => ({ name: member.name, miles: 0 }))
+  const noActivity = Array.from(memberMap.values())
+    .filter(member => !activeKeys.has(member.key))
+    .map(member => ({
+      name: member.name,
+      miles: 0
+    }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return {
-    walk: walk.map(({ name, miles }) => ({ name, miles })),
-    run: run.map(({ name, miles }) => ({ name, miles })),
-    ride: ride.map(({ name, miles }) => ({ name, miles })),
-    hike: hike.map(({ name, miles }) => ({ name, miles })),
-    noActivity
-  };
+  return { walk, run, ride, hike, noActivity };
 }
 
 async function fetchLogoBuffer() {
