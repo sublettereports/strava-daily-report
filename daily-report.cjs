@@ -90,35 +90,35 @@ async function getClubActivities(accessToken, clubId) {
   return fetchAllPages(`https://www.strava.com/api/v3/clubs/${clubId}/activities`, accessToken);
 }
 
-function getPreviousChicagoDayWindow() {
+function getPreviousChicagoDayInfo() {
   const now = new Date();
 
-  const chicagoParts = new Intl.DateTimeFormat('en-CA', {
+  const parts = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'America/Chicago',
     year: 'numeric',
     month: '2-digit',
     day: '2-digit'
   }).formatToParts(now);
 
-  const year = Number(chicagoParts.find(p => p.type === 'year').value);
-  const month = Number(chicagoParts.find(p => p.type === 'month').value);
-  const day = Number(chicagoParts.find(p => p.type === 'day').value);
+  const year = Number(parts.find(p => p.type === 'year').value);
+  const month = Number(parts.find(p => p.type === 'month').value);
+  const day = Number(parts.find(p => p.type === 'day').value);
 
-  const todayChicagoDateUtc = new Date(Date.UTC(year, month - 1, day));
-  const previousChicagoDateUtc = new Date(todayChicagoDateUtc.getTime() - 24 * 60 * 60 * 1000);
+  const chicagoTodayUtc = new Date(Date.UTC(year, month - 1, day));
+  const chicagoYesterdayUtc = new Date(chicagoTodayUtc.getTime() - 24 * 60 * 60 * 1000);
 
-  const prevYear = previousChicagoDateUtc.getUTCFullYear();
-  const prevMonth = String(previousChicagoDateUtc.getUTCMonth() + 1).padStart(2, '0');
-  const prevDay = String(previousChicagoDateUtc.getUTCDate()).padStart(2, '0');
+  const reportYear = chicagoYesterdayUtc.getUTCFullYear();
+  const reportMonth = chicagoYesterdayUtc.getUTCMonth() + 1;
+  const reportDay = chicagoYesterdayUtc.getUTCDate();
 
-  const isoDate = `${prevYear}-${prevMonth}-${prevDay}`;
+  const isoDate = `${reportYear}-${String(reportMonth).padStart(2, '0')}-${String(reportDay).padStart(2, '0')}`;
 
-  const prettyDate = new Intl.DateTimeFormat('en-US', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: 'long',
-    day: 'numeric'
-  }).format(previousChicagoDateUtc);
+  const monthNames = [
+    'January', 'February', 'March', 'April', 'May', 'June',
+    'July', 'August', 'September', 'October', 'November', 'December'
+  ];
+
+  const prettyDate = `${monthNames[reportMonth - 1]} ${reportDay}, ${reportYear}`;
 
   return {
     isoDate,
@@ -137,14 +137,6 @@ function formatMiles(miles) {
 function getMemberName(member) {
   const first = (member.firstname || '').trim();
   const last = (member.lastname || '').trim();
-  const full = `${first} ${last}`.trim();
-  return full || 'Unnamed Athlete';
-}
-
-function getActivityName(activity) {
-  const athlete = activity.athlete || {};
-  const first = (athlete.firstname || '').trim();
-  const last = (athlete.lastname || '').trim();
   const full = `${first} ${last}`.trim();
   return full || 'Unnamed Athlete';
 }
@@ -169,8 +161,30 @@ function activityMatchesReportDate(activity, isoDate) {
   return local.startsWith(isoDate);
 }
 
+function buildMemberLookup(members) {
+  const byId = new Map();
+
+  for (const member of members) {
+    if (member && member.id != null) {
+      byId.set(String(member.id), {
+        id: String(member.id),
+        name: getMemberName(member)
+      });
+    }
+  }
+
+  return byId;
+}
+
 function buildReportData(members, activities, reportIsoDate) {
-  const memberNames = members.map(getMemberName);
+  const memberLookup = buildMemberLookup(members);
+
+  const allMembers = members
+    .map(member => ({
+      id: member && member.id != null ? String(member.id) : null,
+      name: getMemberName(member)
+    }))
+    .filter(member => member.id);
 
   const categories = {
     walk: new Map(),
@@ -179,7 +193,7 @@ function buildReportData(members, activities, reportIsoDate) {
     hike: new Map()
   };
 
-  const activeNames = new Set();
+  const activeMemberIds = new Set();
 
   for (const activity of activities) {
     if (!activityMatchesReportDate(activity, reportIsoDate)) {
@@ -191,37 +205,56 @@ function buildReportData(members, activities, reportIsoDate) {
       continue;
     }
 
-    const athleteName = getActivityName(activity);
+    const athleteId = activity && activity.athlete && activity.athlete.id != null
+      ? String(activity.athlete.id)
+      : null;
+
+    if (!athleteId) {
+      continue;
+    }
+
+    const member = memberLookup.get(athleteId);
+    if (!member) {
+      continue;
+    }
+
     const miles = metersToMiles(activity.distance);
+    activeMemberIds.add(athleteId);
 
-    activeNames.add(athleteName);
+    const current = categories[category].get(athleteId) || {
+      id: athleteId,
+      name: member.name,
+      miles: 0
+    };
 
-    const current = categories[category].get(athleteName) || 0;
-    categories[category].set(athleteName, current + miles);
+    current.miles += miles;
+    categories[category].set(athleteId, current);
   }
 
-  const walk = Array.from(categories.walk.entries())
-    .map(([name, miles]) => ({ name, miles }))
+  const walk = Array.from(categories.walk.values())
     .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
 
-  const run = Array.from(categories.run.entries())
-    .map(([name, miles]) => ({ name, miles }))
+  const run = Array.from(categories.run.values())
     .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
 
-  const ride = Array.from(categories.ride.entries())
-    .map(([name, miles]) => ({ name, miles }))
+  const ride = Array.from(categories.ride.values())
     .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
 
-  const hike = Array.from(categories.hike.entries())
-    .map(([name, miles]) => ({ name, miles }))
+  const hike = Array.from(categories.hike.values())
     .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
 
-  const noActivity = memberNames
-    .filter(name => !activeNames.has(name))
-    .map(name => ({ name, miles: 0 }))
+  const noActivity = allMembers
+    .filter(member => !activeMemberIds.has(member.id))
+    .map(member => ({ name: member.name, miles: 0 }))
     .sort((a, b) => a.name.localeCompare(b.name));
 
-  return { walk, run, ride, hike, noActivity };
+  return {
+    walk: walk.map(({ name, miles }) => ({ name, miles })),
+    run: run.map(({ name, miles }) => ({ name, miles })),
+    ride: ride.map(({ name, miles }) => ({ name, miles })),
+    hike: hike.map(({ name, miles }) => ({ name, miles })),
+    noActivity
+  };
 }
 
 async function fetchLogoBuffer() {
@@ -455,7 +488,7 @@ async function runReport() {
   validateEnv();
 
   const clubId = requireEnv('STRAVA_CLUB_ID');
-  const { isoDate, prettyDate } = getPreviousChicagoDayWindow();
+  const { isoDate, prettyDate } = getPreviousChicagoDayInfo();
 
   console.log(`Building report for ${prettyDate} (${isoDate})`);
 
@@ -469,6 +502,12 @@ async function runReport() {
   console.log(`Recent club activities fetched: ${activities.length}`);
 
   const reportData = buildReportData(members, activities, isoDate);
+
+  console.log(`Walk entries: ${reportData.walk.length}`);
+  console.log(`Run entries: ${reportData.run.length}`);
+  console.log(`Ride entries: ${reportData.ride.length}`);
+  console.log(`Hike entries: ${reportData.hike.length}`);
+  console.log(`No Activity entries: ${reportData.noActivity.length}`);
 
   const outputFile = path.join(process.cwd(), `strava-daily-report-${isoDate}.pdf`);
 
