@@ -90,39 +90,40 @@ async function getClubActivities(accessToken, clubId) {
   return fetchAllPages(`https://www.strava.com/api/v3/clubs/${clubId}/activities`, accessToken);
 }
 
-function getChicagoReportDateInfo() {
+function getChicagoWindowInfo() {
   const now = new Date();
+  const chicagoNowString = now.toLocaleString('en-US', { timeZone: 'America/Chicago' });
+  const chicagoNow = new Date(chicagoNowString);
 
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(now);
+  const end = new Date(chicagoNow);
+  end.setHours(16, 0, 0, 0);
 
-  const year = Number(parts.find(p => p.type === 'year').value);
-  const month = Number(parts.find(p => p.type === 'month').value);
-  const day = Number(parts.find(p => p.type === 'day').value);
+  if (chicagoNow < end) {
+    end.setDate(end.getDate() - 1);
+  }
 
-  const chicagoMidnightUtc = new Date(Date.UTC(year, month - 1, day));
-  const yesterdayUtc = new Date(chicagoMidnightUtc.getTime() - 24 * 60 * 60 * 1000);
-
-  const y = yesterdayUtc.getUTCFullYear();
-  const m = String(yesterdayUtc.getUTCMonth() + 1).padStart(2, '0');
-  const d = String(yesterdayUtc.getUTCDate()).padStart(2, '0');
-
-  const isoDate = `${y}-${m}-${d}`;
+  const start = new Date(end);
+  start.setDate(start.getDate() - 1);
 
   const prettyDate = new Intl.DateTimeFormat('en-US', {
     timeZone: 'America/Chicago',
     year: 'numeric',
     month: 'long',
     day: 'numeric'
-  }).format(yesterdayUtc);
+  }).format(start);
+
+  const fileDate = new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'America/Chicago',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).format(start);
 
   return {
-    isoDate,
-    prettyDate
+    start,
+    end,
+    prettyDate,
+    fileDate
   };
 }
 
@@ -164,12 +165,17 @@ function bucketForSportType(sportType) {
   return null;
 }
 
-function activityMatchesReportDate(activity, isoDate) {
-  const local = String(activity.start_date_local || '');
-  return local.startsWith(isoDate);
+function isActivityInWindow(activity, start, end) {
+  const dateString = activity.start_date || activity.start_date_local;
+  if (!dateString) {
+    return false;
+  }
+
+  const activityTime = new Date(dateString);
+  return activityTime >= start && activityTime < end;
 }
 
-function buildReportData(members, activities, reportIsoDate) {
+function buildReportData(members, activities, start, end) {
   const memberNames = members.map(getMemberName);
 
   const categories = {
@@ -182,7 +188,7 @@ function buildReportData(members, activities, reportIsoDate) {
   const activeNames = new Set();
 
   for (const activity of activities) {
-    if (!activityMatchesReportDate(activity, reportIsoDate)) {
+    if (!isActivityInWindow(activity, start, end)) {
       continue;
     }
 
@@ -242,7 +248,20 @@ async function fetchLogoBuffer() {
   }
 }
 
-function drawColumn(doc, x, y, width, title, rows, pageHeightBottomLimit) {
+function splitIntoChunks(rows, chunkSize) {
+  if (chunkSize <= 0) {
+    return [rows];
+  }
+
+  const chunks = [];
+  for (let i = 0; i < rows.length; i += chunkSize) {
+    chunks.push(rows.slice(i, i + chunkSize));
+  }
+
+  return chunks.length ? chunks : [[]];
+}
+
+function drawColumn(doc, x, y, width, title, rows) {
   doc
     .font('Helvetica-Bold')
     .fontSize(14)
@@ -259,55 +278,45 @@ function drawColumn(doc, x, y, width, title, rows, pageHeightBottomLimit) {
   }
 
   for (const row of rows) {
-    if (currentY > pageHeightBottomLimit) {
-      doc
-        .font('Helvetica')
-        .fontSize(10)
-        .text('...', x, currentY, { width, align: 'left' });
-      break;
-    }
+    doc
+      .font('Helvetica')
+      .fontSize(10)
+      .text(row.name, x, currentY, {
+        width: width - 55,
+        align: 'left'
+      });
 
     doc
       .font('Helvetica')
       .fontSize(10)
-      .text(row.name, x, currentY, { width: width - 55, align: 'left' });
-
-    doc
-      .font('Helvetica')
-      .fontSize(10)
-      .text(formatMiles(row.miles), x + width - 55, currentY, { width: 55, align: 'right' });
+      .text(formatMiles(row.miles), x + width - 55, currentY, {
+        width: 55,
+        align: 'right'
+      });
 
     currentY += 14;
   }
 }
 
-async function createPdf(reportData, prettyDate, outputPath) {
-  const doc = new PDFDocument({
-    size: 'LETTER',
-    margin: 36
-  });
-
-  const stream = fs.createWriteStream(outputPath);
-  doc.pipe(stream);
-
-  const logoBuffer = await fetchLogoBuffer();
-
+function renderPageHeader(doc, prettyDate, logoBuffer, isFirstPage) {
   const pageWidth = doc.page.width;
   const left = doc.page.margins.left;
   const right = doc.page.margins.right;
   const contentWidth = pageWidth - left - right;
 
-  if (logoBuffer) {
+  if (isFirstPage && logoBuffer) {
     try {
       doc.image(logoBuffer, left, 24, {
         fit: [contentWidth, 70],
         align: 'center'
       });
-      doc.moveDown(4);
+      doc.y = 110;
     } catch (error) {
       console.warn(`Logo rendering failed: ${error.message}`);
-      doc.moveDown(1);
+      doc.y = 50;
     }
+  } else {
+    doc.y = 36;
   }
 
   doc
@@ -320,25 +329,97 @@ async function createPdf(reportData, prettyDate, outputPath) {
 
   doc.moveDown(1);
 
+  return {
+    left,
+    contentWidth,
+    startY: doc.y + 8
+  };
+}
+
+async function createPdf(reportData, prettyDate, outputPath) {
+  const doc = new PDFDocument({
+    size: 'LETTER',
+    margin: 36,
+    autoFirstPage: true
+  });
+
+  const stream = fs.createWriteStream(outputPath);
+  doc.pipe(stream);
+
+  const logoBuffer = await fetchLogoBuffer();
+
+  const firstHeader = renderPageHeader(doc, prettyDate, logoBuffer, true);
+
   const columnGap = 14;
   const totalGap = columnGap * 3;
-  const columnWidth = (contentWidth - totalGap) / 4;
-  const startX = left;
-  const startY = doc.y + 8;
+  const columnWidth = (firstHeader.contentWidth - totalGap) / 4;
+  const rowHeight = 14;
+  const titleHeight = 22;
   const bottomLimit = doc.page.height - doc.page.margins.bottom - 10;
+  const usableHeight = bottomLimit - (firstHeader.startY + titleHeight);
+  const rowsPerPage = Math.max(1, Math.floor(usableHeight / rowHeight));
 
-  drawColumn(doc, startX, startY, columnWidth, 'Walk', reportData.walk, bottomLimit);
-  drawColumn(doc, startX + columnWidth + columnGap, startY, columnWidth, 'Run', reportData.run, bottomLimit);
-  drawColumn(doc, startX + (columnWidth + columnGap) * 2, startY, columnWidth, 'Ride', reportData.ride, bottomLimit);
-  drawColumn(
-    doc,
-    startX + (columnWidth + columnGap) * 3,
-    startY,
-    columnWidth,
-    'Hike / No Activity',
-    [...reportData.hike, ...reportData.noActivity],
-    bottomLimit
+  const hikeAndNoActivity = [...reportData.hike, ...reportData.noActivity];
+
+  const pageChunks = {
+    walk: splitIntoChunks(reportData.walk, rowsPerPage),
+    run: splitIntoChunks(reportData.run, rowsPerPage),
+    ride: splitIntoChunks(reportData.ride, rowsPerPage),
+    hikeNoActivity: splitIntoChunks(hikeAndNoActivity, rowsPerPage)
+  };
+
+  const totalPages = Math.max(
+    pageChunks.walk.length,
+    pageChunks.run.length,
+    pageChunks.ride.length,
+    pageChunks.hikeNoActivity.length
   );
+
+  for (let pageIndex = 0; pageIndex < totalPages; pageIndex += 1) {
+    if (pageIndex > 0) {
+      doc.addPage();
+      renderPageHeader(doc, prettyDate, null, false);
+    }
+
+    const startX = doc.page.margins.left;
+    const startY = doc.y + 8;
+
+    drawColumn(
+      doc,
+      startX,
+      startY,
+      columnWidth,
+      pageIndex === 0 ? 'Walk' : 'Walk (cont.)',
+      pageChunks.walk[pageIndex] || []
+    );
+
+    drawColumn(
+      doc,
+      startX + columnWidth + columnGap,
+      startY,
+      columnWidth,
+      pageIndex === 0 ? 'Run' : 'Run (cont.)',
+      pageChunks.run[pageIndex] || []
+    );
+
+    drawColumn(
+      doc,
+      startX + (columnWidth + columnGap) * 2,
+      startY,
+      columnWidth,
+      pageIndex === 0 ? 'Ride' : 'Ride (cont.)',
+      pageChunks.ride[pageIndex] || []
+    );
+
+    drawColumn(
+      doc,
+      startX + (columnWidth + columnGap) * 3,
+      startY,
+      columnWidth,
+      pageIndex === 0 ? 'Hike / No Activity' : 'Hike / No Activity (cont.)',
+      pageChunks.hikeNoActivity[pageIndex] || []
+    );
+  }
 
   doc.end();
 
@@ -380,9 +461,11 @@ async function runReport() {
   validateEnv();
 
   const clubId = requireEnv('STRAVA_CLUB_ID');
-  const { isoDate, prettyDate } = getChicagoReportDateInfo();
+  const { start, end, prettyDate, fileDate } = getChicagoWindowInfo();
 
-  console.log(`Building report for ${prettyDate} (${isoDate})`);
+  console.log(`Building report for ${prettyDate}`);
+  console.log(`Window start: ${start.toISOString()}`);
+  console.log(`Window end: ${end.toISOString()}`);
 
   const accessToken = await getAccessToken();
   const [members, activities] = await Promise.all([
@@ -393,9 +476,9 @@ async function runReport() {
   console.log(`Members fetched: ${members.length}`);
   console.log(`Recent club activities fetched: ${activities.length}`);
 
-  const reportData = buildReportData(members, activities, isoDate);
+  const reportData = buildReportData(members, activities, start, end);
 
-  const outputFile = path.join(process.cwd(), `strava-daily-report-${isoDate}.pdf`);
+  const outputFile = path.join(process.cwd(), `strava-daily-report-${fileDate}.pdf`);
 
   await createPdf(reportData, prettyDate, outputFile);
   console.log(`PDF created: ${outputFile}`);
