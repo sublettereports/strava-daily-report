@@ -543,10 +543,28 @@ async function runReport() {
 }
 
 runReport().catch(error => {
-  if (error.response) {
-    console.error('Strava/API error response:', error.response.status, error.response.data);
+  console.error('REPORT FAILED');
+
+  if (error && error.response && typeof error.response === 'object') {
+    console.error('API error status:', error.response.status);
+    console.error('API error data:', error.response.data);
+  } else if (error && error.response) {
+    console.error('SMTP/API response:', error.response);
+  }
+
+  if (error && error.code) {
+    console.error('Error code:', error.code);
+  }
+
+  if (error && error.command) {
+    console.error('Failed command:', error.command);
+  }
+
+  if (error && error.message) {
+    console.error('Error message:', error.message);
   } else {
     console.error(error);
   }
+
   process.exit(1);
 });
