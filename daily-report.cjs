@@ -25,9 +25,7 @@ function requireEnv(name) {
 }
 
 function validateEnv() {
-  for (const name of REQUIRED_ENV_VARS) {
-    requireEnv(name);
-  }
+  for (const name of REQUIRED_ENV_VARS) requireEnv(name);
 }
 
 async function getAccessToken() {
@@ -45,10 +43,6 @@ async function getAccessToken() {
     }
   );
 
-  if (!response.data || !response.data.access_token) {
-    throw new Error('Strava did not return an access token.');
-  }
-
   return response.data.access_token;
 }
 
@@ -59,165 +53,55 @@ async function fetchAllPages(url, accessToken) {
 
   while (true) {
     const response = await axios.get(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`
-      },
-      params: {
-        page,
-        per_page: perPage
-      },
+      headers: { Authorization: `Bearer ${accessToken}` },
+      params: { page, per_page: perPage },
       timeout: 30000
     });
 
-    const rows = Array.isArray(response.data) ? response.data : [];
+    const rows = response.data || [];
     all.push(...rows);
 
-    if (rows.length < perPage) {
-      break;
-    }
-
-    page += 1;
+    if (rows.length < perPage) break;
+    page++;
   }
 
   return all;
 }
 
-async function fetchFirstPage(url, accessToken, perPage = 100) {
+async function fetchFirstPage(url, accessToken) {
   const response = await axios.get(url, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`
-    },
-    params: {
-      page: 1,
-      per_page: perPage
-    },
+    headers: { Authorization: `Bearer ${accessToken}` },
+    params: { page: 1, per_page: 100 },
     timeout: 30000
   });
 
-  return Array.isArray(response.data) ? response.data : [];
+  return response.data || [];
 }
 
-async function getClubMembers(accessToken, clubId) {
-  return fetchAllPages(`https://www.strava.com/api/v3/clubs/${clubId}/members`, accessToken);
+async function getClubMembers(token, clubId) {
+  return fetchAllPages(`https://www.strava.com/api/v3/clubs/${clubId}/members`, token);
 }
 
-async function getClubActivities(accessToken, clubId) {
-  return fetchFirstPage(`https://www.strava.com/api/v3/clubs/${clubId}/activities`, accessToken, 100);
-}
-
-function getPreviousChicagoDayInfo() {
-  const now = new Date();
-
-  const parts = new Intl.DateTimeFormat('en-CA', {
-    timeZone: 'America/Chicago',
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit'
-  }).formatToParts(now);
-
-  const year = Number(parts.find(p => p.type === 'year').value);
-  const month = Number(parts.find(p => p.type === 'month').value);
-  const day = Number(parts.find(p => p.type === 'day').value);
-
-  const chicagoTodayUtc = new Date(Date.UTC(year, month - 1, day));
-  const chicagoYesterdayUtc = new Date(chicagoTodayUtc.getTime() - 24 * 60 * 60 * 1000);
-
-  const reportYear = chicagoYesterdayUtc.getUTCFullYear();
-  const reportMonth = chicagoYesterdayUtc.getUTCMonth() + 1;
-  const reportDay = chicagoYesterdayUtc.getUTCDate();
-
-  const isoDate = `${reportYear}-${String(reportMonth).padStart(2, '0')}-${String(reportDay).padStart(2, '0')}`;
-
-  const monthNames = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December'
-  ];
-
-  const prettyDate = `${monthNames[reportMonth - 1]} ${reportDay}, ${reportYear}`;
-
-  return {
-    isoDate,
-    prettyDate
-  };
+async function getClubActivities(token, clubId) {
+  return fetchFirstPage(`https://www.strava.com/api/v3/clubs/${clubId}/activities`, token);
 }
 
 function metersToMiles(meters) {
-  return Number(meters || 0) * 0.000621371;
+  if (!meters || isNaN(meters)) return 0;
+  return meters * 0.000621371;
 }
 
-function formatMiles(miles) {
-  return `${miles.toFixed(2)} mi`;
+function formatMiles(m) {
+  return `${m.toFixed(2)} mi`;
 }
 
-function getMemberName(member) {
-  const first = (member.firstname || '').trim();
-  const last = (member.lastname || '').trim();
-  const full = `${first} ${last}`.trim();
-  return full || 'Unnamed Athlete';
+function getName(obj) {
+  return `${obj.firstname || ''} ${obj.lastname || ''}`.trim();
 }
 
-function getActivityAthleteName(activity) {
-  const athlete = activity.athlete || {};
-  const first = (athlete.firstname || '').trim();
-  const last = (athlete.lastname || '').trim();
-  const full = `${first} ${last}`.trim();
-  return full || 'Unnamed Athlete';
-}
-
-function normalizeSportType(activity) {
-  return String(activity.sport_type || activity.type || '').trim();
-}
-
-function bucketForSportType(sportType) {
-  const value = String(sportType || '').toLowerCase();
-
-  if (value.includes('walk')) return 'walk';
-  if (value.includes('run')) return 'run';
-  if (value.includes('ride') || value.includes('bike') || value.includes('cycling')) return 'ride';
-  if (value.includes('hike')) return 'hike';
-
-  return null;
-}
-
-function normalizeName(name) {
-  return String(name || '')
-    .trim()
-    .toLowerCase()
-    .replace(/\s+/g, ' ');
-}
-
-function buildMemberKey(member) {
-  if (member && member.id != null) {
-    return `id:${String(member.id)}`;
-  }
-
-  const name = getMemberName(member);
-  return `name:${normalizeName(name)}`;
-}
-
-function buildActivityKey(activity) {
-  if (activity && activity.athlete && activity.athlete.id != null) {
-    return `id:${String(activity.athlete.id)}`;
-  }
-
-  const name = getActivityAthleteName(activity);
-  return `name:${normalizeName(name)}`;
-}
-
-function buildReportData(members, activities) {
+function buildData(members, activities) {
   const memberMap = new Map();
-
-  for (const member of members) {
-    const key = buildMemberKey(member);
-    const name = getMemberName(member);
-
-    if (!memberMap.has(key)) {
-      memberMap.set(key, {
-        key,
-        name
-      });
-    }
-  }
+  members.forEach(m => memberMap.set(m.id, getName(m)));
 
   const categories = {
     walk: new Map(),
@@ -226,345 +110,122 @@ function buildReportData(members, activities) {
     hike: new Map()
   };
 
-  const activeKeys = new Set();
+  const active = new Set();
 
-  for (const activity of activities) {
-    const category = bucketForSportType(normalizeSportType(activity));
-    if (!category) {
-      continue;
-    }
+  for (const a of activities) {
+    // DEBUG (leave this for now)
+    console.log('DEBUG:', a.type, a.sport_type, a.distance);
 
-    const activityKey = buildActivityKey(activity);
-    let member = memberMap.get(activityKey);
+    const type = (a.sport_type || a.type || '').toLowerCase();
 
-    if (!member) {
-      const fallbackNameKey = `name:${normalizeName(getActivityAthleteName(activity))}`;
-      member = memberMap.get(fallbackNameKey);
-    }
+    let bucket = null;
+    if (type.includes('walk')) bucket = 'walk';
+    else if (type.includes('run')) bucket = 'run';
+    else if (type.includes('ride')) bucket = 'ride';
+    else if (type.includes('hike')) bucket = 'hike';
 
-    if (!member) {
-      continue;
-    }
+    if (!bucket) continue;
 
-    const miles = metersToMiles(activity.distance);
-    activeKeys.add(member.key);
+    const athleteId = a.athlete?.id;
+    if (!athleteId || !memberMap.has(athleteId)) continue;
 
-    const current = categories[category].get(member.key) || {
-      name: member.name,
+    const distanceMeters = a.distance || a.moving_distance || 0;
+    const miles = metersToMiles(distanceMeters);
+
+    active.add(athleteId);
+
+    const current = categories[bucket].get(athleteId) || {
+      name: memberMap.get(athleteId),
       miles: 0
     };
 
     current.miles += miles;
-    categories[category].set(member.key, current);
+    categories[bucket].set(athleteId, current);
   }
 
-  const walk = Array.from(categories.walk.values())
-    .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
+  const sort = arr => Array.from(arr.values()).sort((a,b)=>b.miles-a.miles);
 
-  const run = Array.from(categories.run.values())
-    .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
-
-  const ride = Array.from(categories.ride.values())
-    .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
-
-  const hike = Array.from(categories.hike.values())
-    .sort((a, b) => b.miles - a.miles || a.name.localeCompare(b.name));
-
-  const noActivity = Array.from(memberMap.values())
-    .filter(member => !activeKeys.has(member.key))
-    .map(member => ({
-      name: member.name,
-      miles: 0
-    }))
-    .sort((a, b) => a.name.localeCompare(b.name));
-
-  return { walk, run, ride, hike, noActivity };
-}
-
-async function fetchLogoBuffer() {
-  const logoUrl = (process.env.STRAVA_LOGO_URL || '').trim();
-  if (!logoUrl) {
-    return null;
-  }
-
-  try {
-    const response = await axios.get(logoUrl, {
-      responseType: 'arraybuffer',
-      timeout: 30000
-    });
-    return Buffer.from(response.data);
-  } catch (error) {
-    console.warn(`Logo download failed: ${error.message}`);
-    return null;
-  }
-}
-
-function splitIntoChunks(rows, chunkSize) {
-  if (chunkSize <= 0) {
-    return [rows];
-  }
-
-  const chunks = [];
-  for (let i = 0; i < rows.length; i += chunkSize) {
-    chunks.push(rows.slice(i, i + chunkSize));
-  }
-
-  return chunks.length ? chunks : [[]];
-}
-
-function drawColumn(doc, x, y, width, title, rows) {
-  doc
-    .font('Helvetica-Bold')
-    .fontSize(14)
-    .text(title, x, y, { width, align: 'left' });
-
-  let currentY = y + 22;
-
-  if (!rows.length) {
-    doc
-      .font('Helvetica')
-      .fontSize(10)
-      .text('None', x, currentY, { width, align: 'left' });
-    return;
-  }
-
-  for (const row of rows) {
-    doc
-      .font('Helvetica')
-      .fontSize(10)
-      .text(row.name, x, currentY, {
-        width: width - 55,
-        align: 'left'
-      });
-
-    doc
-      .font('Helvetica')
-      .fontSize(10)
-      .text(formatMiles(row.miles), x + width - 55, currentY, {
-        width: 55,
-        align: 'right'
-      });
-
-    currentY += 14;
-  }
-}
-
-function renderPageHeader(doc, prettyDate, logoBuffer, isFirstPage) {
-  const pageWidth = doc.page.width;
-  const left = doc.page.margins.left;
-  const right = doc.page.margins.right;
-  const contentWidth = pageWidth - left - right;
-
-  if (isFirstPage && logoBuffer) {
-    try {
-      doc.image(logoBuffer, left, 24, {
-        fit: [contentWidth, 70],
-        align: 'center'
-      });
-      doc.y = 110;
-    } catch (error) {
-      console.warn(`Logo rendering failed: ${error.message}`);
-      doc.y = 50;
-    }
-  } else {
-    doc.y = 36;
-  }
-
-  doc
-    .font('Helvetica-Bold')
-    .fontSize(20)
-    .text(`Strava Daily Report - ${prettyDate}`, left, doc.y, {
-      width: contentWidth,
-      align: 'center'
-    });
-
-  doc.moveDown(1);
+  const noActivity = members
+    .filter(m => !active.has(m.id))
+    .map(m => ({ name: getName(m), miles: 0 }));
 
   return {
-    left,
-    contentWidth,
-    startY: doc.y + 8
+    walk: sort(categories.walk),
+    run: sort(categories.run),
+    ride: sort(categories.ride),
+    hike: sort(categories.hike),
+    noActivity
   };
 }
 
-async function createPdf(reportData, prettyDate, outputPath) {
-  const doc = new PDFDocument({
-    size: 'LETTER',
-    margin: 36,
-    autoFirstPage: true
-  });
+async function createPdf(data, date, file) {
+  const doc = new PDFDocument({ margin: 36 });
+  doc.pipe(fs.createWriteStream(file));
 
-  const stream = fs.createWriteStream(outputPath);
-  doc.pipe(stream);
+  doc.fontSize(20).text(`Strava Daily Report - ${date}`, { align: 'center' });
+  doc.moveDown();
 
-  const logoBuffer = await fetchLogoBuffer();
-
-  const firstHeader = renderPageHeader(doc, prettyDate, logoBuffer, true);
-
-  const columnGap = 14;
-  const totalGap = columnGap * 3;
-  const columnWidth = (firstHeader.contentWidth - totalGap) / 4;
-  const rowHeight = 14;
-  const titleHeight = 22;
-  const bottomLimit = doc.page.height - doc.page.margins.bottom - 10;
-  const usableHeight = bottomLimit - (firstHeader.startY + titleHeight);
-  const rowsPerPage = Math.max(1, Math.floor(usableHeight / rowHeight));
-
-  const hikeAndNoActivity = [...reportData.hike, ...reportData.noActivity];
-
-  const pageChunks = {
-    walk: splitIntoChunks(reportData.walk, rowsPerPage),
-    run: splitIntoChunks(reportData.run, rowsPerPage),
-    ride: splitIntoChunks(reportData.ride, rowsPerPage),
-    hikeNoActivity: splitIntoChunks(hikeAndNoActivity, rowsPerPage)
-  };
-
-  const totalPages = Math.max(
-    pageChunks.walk.length,
-    pageChunks.run.length,
-    pageChunks.ride.length,
-    pageChunks.hikeNoActivity.length
-  );
-
-  for (let pageIndex = 0; pageIndex < totalPages; pageIndex += 1) {
-    if (pageIndex > 0) {
-      doc.addPage();
-      renderPageHeader(doc, prettyDate, null, false);
-    }
-
-    const startX = doc.page.margins.left;
-    const startY = doc.y + 8;
-
-    drawColumn(
-      doc,
-      startX,
-      startY,
-      columnWidth,
-      pageIndex === 0 ? 'Walk' : 'Walk (cont.)',
-      pageChunks.walk[pageIndex] || []
-    );
-
-    drawColumn(
-      doc,
-      startX + columnWidth + columnGap,
-      startY,
-      columnWidth,
-      pageIndex === 0 ? 'Run' : 'Run (cont.)',
-      pageChunks.run[pageIndex] || []
-    );
-
-    drawColumn(
-      doc,
-      startX + (columnWidth + columnGap) * 2,
-      startY,
-      columnWidth,
-      pageIndex === 0 ? 'Ride' : 'Ride (cont.)',
-      pageChunks.ride[pageIndex] || []
-    );
-
-    drawColumn(
-      doc,
-      startX + (columnWidth + columnGap) * 3,
-      startY,
-      columnWidth,
-      pageIndex === 0 ? 'Hike / No Activity' : 'Hike / No Activity (cont.)',
-      pageChunks.hikeNoActivity[pageIndex] || []
-    );
+  function draw(title, rows) {
+    doc.fontSize(14).text(title);
+    rows.forEach(r => doc.fontSize(10).text(`${r.name} - ${formatMiles(r.miles)}`));
+    doc.moveDown();
   }
 
-  doc.end();
+  draw('Walk', data.walk);
+  draw('Run', data.run);
+  draw('Ride', data.ride);
+  draw('Hike / No Activity', [...data.hike, ...data.noActivity]);
 
-  await new Promise((resolve, reject) => {
-    stream.on('finish', resolve);
-    stream.on('error', reject);
-  });
+  doc.end();
 }
 
-async function sendEmailWithAttachment(filePath, prettyDate) {
+async function sendEmail(file, date) {
   const transporter = nodemailer.createTransport({
     host: requireEnv('EMAIL_HOST'),
     port: Number(requireEnv('EMAIL_PORT')),
-    secure: Number(requireEnv('EMAIL_PORT')) === 465,
+    secure: true,
     auth: {
       user: requireEnv('EMAIL_USER'),
       pass: requireEnv('EMAIL_PASS')
     }
   });
 
-  const fileName = path.basename(filePath);
-
   await transporter.sendMail({
     from: requireEnv('EMAIL_USER'),
     to: requireEnv('EMAIL_USER'),
     bcc: requireEnv('EMAIL_BCC'),
-    subject: `Strava Daily Report - ${prettyDate}`,
-    text: `Attached is the Strava Daily Report for ${prettyDate}.`,
-    attachments: [
-      {
-        filename: fileName,
-        path: filePath
-      }
-    ]
+    subject: `Strava Report ${date}`,
+    text: 'Attached',
+    attachments: [{ path: file }]
   });
 }
 
 async function runReport() {
   validateEnv();
 
+  const token = await getAccessToken();
   const clubId = requireEnv('STRAVA_CLUB_ID');
-  const { isoDate, prettyDate } = getPreviousChicagoDayInfo();
 
-  console.log(`Building report for ${prettyDate} (${isoDate})`);
-
-  const accessToken = await getAccessToken();
   const [members, activities] = await Promise.all([
-    getClubMembers(accessToken, clubId),
-    getClubActivities(accessToken, clubId)
+    getClubMembers(token, clubId),
+    getClubActivities(token, clubId)
   ]);
 
-  console.log(`Members fetched: ${members.length}`);
-  console.log(`Recent club activities fetched: ${activities.length}`);
+  console.log('Members:', members.length);
+  console.log('Activities:', activities.length);
 
-  const reportData = buildReportData(members, activities);
+  const data = buildData(members, activities);
 
-  console.log(`Walk entries: ${reportData.walk.length}`);
-  console.log(`Run entries: ${reportData.run.length}`);
-  console.log(`Ride entries: ${reportData.ride.length}`);
-  console.log(`Hike entries: ${reportData.hike.length}`);
-  console.log(`No Activity entries: ${reportData.noActivity.length}`);
+  const file = `report.pdf`;
 
-  const outputFile = path.join(process.cwd(), `strava-daily-report-${isoDate}.pdf`);
+  await createPdf(data, new Date().toDateString(), file);
+  console.log('PDF created');
 
-  await createPdf(reportData, prettyDate, outputFile);
-  console.log(`PDF created: ${outputFile}`);
-
-  await sendEmailWithAttachment(outputFile, prettyDate);
-  console.log('Email sent successfully');
+  await sendEmail(file);
+  console.log('Email sent');
 }
 
-runReport().catch(error => {
-  console.error('REPORT FAILED');
-
-  if (error && error.response && typeof error.response === 'object') {
-    console.error('API error status:', error.response.status);
-    console.error('API error data:', error.response.data);
-  } else if (error && error.response) {
-    console.error('SMTP/API response:', error.response);
-  }
-
-  if (error && error.code) {
-    console.error('Error code:', error.code);
-  }
-
-  if (error && error.command) {
-    console.error('Failed command:', error.command);
-  }
-
-  if (error && error.message) {
-    console.error('Error message:', error.message);
-  } else {
-    console.error(error);
-  }
-
+runReport().catch(err => {
+  console.error(err);
   process.exit(1);
 });
